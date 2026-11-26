@@ -98,6 +98,8 @@ fn x_tanh_plus_x(m: Matcher, id: ExprId) -> Option<(ExprId, ExprId)> {
         let ExprNode::Mul(p, q) = *m.node(product) else {
             return None;
         };
-        either(p, q, |same_x, t| m.same(same_x, x).then_some((x, m.tanh(t)?)))
+        either(p, q, |same_x, t| {
+            m.same(same_x, x).then_some((x, m.tanh(t)?))
+        })
     })
 }

@@ -875,11 +875,6 @@ impl SymbolTable {
         self.params.len()
     }
 
-    /// Check if kernel uses dynamic (extern) shared memory
-    pub fn has_extern_shared(&self) -> bool {
-        self.has_extern_shared
-    }
-
     /// Find similar register names for error suggestions
     pub fn find_similar_registers(&self, name: &str) -> Vec<String> {
         self.registers

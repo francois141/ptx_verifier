@@ -557,3 +557,59 @@ fn meta_no_negative_pair_is_proved_equivalent() {
         );
     }
 }
+
+// =========================================================================
+// CUDA's accurate expf against `exp`, through the activation rewrites
+// =========================================================================
+
+/// `kernel`'s single output against the spec `out[i] = exp(in[i])`, rewrites applied.
+fn against_exp_spec(name: &str, kernel: &Kernel) -> volta_pipeline::EquivalenceVerdict {
+    let actual = run(name, kernel);
+    let dims = std::collections::HashMap::from([("N".to_string(), 1)]);
+    let spec = "dim N; array in[N]; array out[N]; out[i] = exp(in[i]);";
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower()
+        .unwrap();
+    volta_pipeline::check_equivalence(
+        &reference,
+        &actual,
+        &["out".to_string()],
+        &volta_equivalence::check::EquivCheckOptions::default(),
+    )
+    .0
+}
+
+/// libdevice's `expf` without fast math, `ex2(x * (H + L) - n) * 2^n`, is `exp(x)`.
+#[test]
+fn test_cuda_accurate_expf_is_exp() {
+    let kernel = Kernel {
+        ptx: ptx!(parse "negative_equivalence/cuda_accurate_expf_is_exp"),
+        config: f32_config(1, 1, 1),
+    };
+    assert_eq!(
+        against_exp_spec("cuda_accurate_expf_is_exp", &kernel),
+        volta_pipeline::EquivalenceVerdict::Equivalent {
+            checked: 1,
+            total: 1
+        }
+    );
+}
+
+/// Without the split's low half the exponent is `x * f32(log2 e) * ln 2`, 1e-8 off `x`: the
+/// rewrite must not read it as `exp(x)`.
+#[test]
+fn test_cuda_expf_without_split_low_half_is_not_exp() {
+    let kernel = Kernel {
+        ptx: ptx!(parse "negative_equivalence/cuda_expf_without_split_low_half"),
+        config: f32_config(1, 1, 1),
+    };
+    let verdict = against_exp_spec("cuda_expf_without_split_low_half", &kernel);
+    assert!(
+        !matches!(
+            verdict,
+            volta_pipeline::EquivalenceVerdict::Equivalent { .. }
+        ),
+        "SOUNDNESS BUG: a 1e-8-off exponential was proved exp: {verdict:?}"
+    );
+}

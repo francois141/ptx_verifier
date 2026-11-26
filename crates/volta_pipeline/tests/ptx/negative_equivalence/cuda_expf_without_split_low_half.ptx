@@ -1,0 +1,32 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+// CUDA's accurate expf without the low half of its log2(e) split: 2^(x * f32(log2 e)) is not
+// exp(x) within the rewrite's 1e-9, so the check is not decided.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %r1, [%rd1];
+    fma.rn.f32 %r2, %r1, 0f3BBB989D, 0f3F000000;
+    cvt.sat.f32.f32 %r3, %r2;
+    mov.b32 %r4, 0f4B400001;
+    mov.b32 %r5, 0f437C0000;
+    fma.rm.f32 %r6, %r3, %r5, %r4;
+    add.f32 %r7, %r6, 0fCB40007F;
+    neg.f32 %r8, %r7;
+    fma.rn.f32 %r9, %r1, 0f3FB8AA3B, %r8;
+    mov.b32 %r10, %r9;
+    shl.b32 %r11, %r6, 23;
+    ex2.approx.ftz.f32 %r12, %r10;
+    mul.f32 %r13, %r12, %r11;
+    st.global.f32 [%rd2], %r13;
+    ret;
+}

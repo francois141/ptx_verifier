@@ -372,11 +372,8 @@ impl<'p> Interpreter<'p> {
                 "global variable",
             )?;
         }
-        if program.symbols.has_extern_shared() && config.dynamic_shared_bytes == 0 {
-            return Err(EvalError::Config {
-                message: "kernel uses extern shared memory; set dynamic_shared_bytes".to_string(),
-            });
-        }
+        // Without `dynamic_shared_bytes` the extern window is empty, so any access to it is
+        // out of bounds: a module's extern array often belongs to another of its kernels.
         for info in program.symbols.shared_vars() {
             if info.is_extern {
                 // Every extern name aliases the one dynamic window; a single

@@ -1,8 +1,9 @@
 //! Local rewrites of an expression graph into equal nodes both sides of an equivalence check
 //! reach: PyTorch's tanh GELU into one [`crate::ExprNode::Gelu`], the selects of PyTorch's
-//! piecewise activations into the `max` and `min` forms their specs state, and LLVM's denormal
-//! guard of `exp` into the `exp` it guards, one module per pattern. `volta_pipeline` applies them to both sides of an equivalence check.
+//! piecewise activations into the `max` and `min` forms their specs state, LLVM's denormal
+//! guard of `exp` into the `exp` it guards, and CUDA's accurate `expf` into `exp`, one module per pattern. `volta_pipeline` applies them to both sides of an equivalence check.
 
+mod accurate_exp;
 mod denormal_exp;
 mod elu;
 pub mod gelu;
@@ -72,6 +73,9 @@ fn replacement(arena: &mut Cow<'_, ExprArena>, id: ExprId) -> Option<ExprId> {
         return Some(found.build(arena.to_mut()));
     }
     if let Some(found) = denormal_exp::denormal_exp(arena, id) {
+        return Some(found.build(arena.to_mut()));
+    }
+    if let Some(found) = accurate_exp::accurate_exp(arena, id) {
         return Some(found.build(arena.to_mut()));
     }
     None

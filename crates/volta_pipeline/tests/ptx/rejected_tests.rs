@@ -68,20 +68,15 @@ fn test_extern_shared_store_invisible_through_static_shared() {
     );
 }
 
-/// An extern-only kernel needs `dynamic_shared_bytes`, which also bounds its
-/// window: a missing size errors and a store past the end is out of bounds.
+/// `dynamic_shared_bytes` bounds an extern-only kernel's window: without it the window is
+/// empty, so the kernel's access is out of bounds, as is a store past the end of a 16-byte one.
 #[test]
 fn test_extern_only_shared_placement_and_bounds() {
     let module = ptx!(parse "execution_error/extern_only_shared_placement_and_bounds");
-    // Without dynamic_shared_bytes the launch is rejected.
     let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
-        matches!(
-            &err,
-            AnalysisError::Eval(EvalError::Config { message })
-                if message.contains("dynamic_shared_bytes")
-        ),
-        "expected missing dynamic_shared_bytes error, got: {}",
+        matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
+        "expected an access to the empty window to be out of bounds, got: {}",
         err
     );
 
