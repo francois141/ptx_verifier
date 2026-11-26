@@ -1518,6 +1518,15 @@ fn test_add_sat_f32_concrete_clamps() {
     analyze!("success/add_sat_f32_concrete_clamps", config);
 }
 
+/// `mbarrier.inval` after a CTA barrier that orders every thread's wait before it, then a
+/// reuse of the object's bytes: race free.
+#[test]
+fn test_mbarrier_inval_after_every_wait_is_accepted() {
+    let mut config = out_only_config(4, 1);
+    config.block_dim = (64, 1, 1);
+    analyze!("success/mbarrier_inval_after_every_wait_is_accepted", config);
+}
+
 /// The two-source `cvt.rn.relu.bf16x2.f32 d, a, b` clamps each half at zero, `a` going to
 /// the high half (DeepGEMM's MQA logits).
 #[test]

@@ -72,9 +72,13 @@ pub fn outside_contract(access: &MemAccess) -> bool {
 }
 
 /// Whether two effects commute, so that no order between them is needed: reductions with
-/// one operation.
+/// one operation, and mbarrier operations.
 pub fn commute(a: OrderingKind, b: OrderingKind) -> bool {
-    matches!((a, b), (OrderingKind::Reduction(x), OrderingKind::Reduction(y)) if x == y)
+    match (a, b) {
+        (OrderingKind::Reduction(x), OrderingKind::Reduction(y)) => x == y,
+        (OrderingKind::Mbarrier, OrderingKind::Mbarrier) => true,
+        _ => false,
+    }
 }
 
 /// Whether `kind` is a `tcgen05` operation, whose Tensor Memory effects form `A`.

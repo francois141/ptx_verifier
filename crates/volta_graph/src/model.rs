@@ -138,7 +138,8 @@ pub enum AccessMode {
 }
 
 /// The memory-model kind of an effect. The PTX and AMD analyses reject atomics and reductions,
-/// so they only record `Ordinary`; checkers must not apply non-atomic rules to the others.
+/// so they record `Ordinary` and `Mbarrier`; checkers must not apply non-atomic rules to the
+/// others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderingKind {
     Ordinary,
@@ -147,6 +148,11 @@ pub enum OrderingKind {
     /// compiler performs one at a time: two reductions with one `op` commute, so their order
     /// does not matter. It is a write for every other effect.
     Reduction(ReductionOp),
+    /// An mbarrier operation's read-modify-write of its 8-byte object (`arrive`, `expect_tx`,
+    /// `complete_tx`, a wait, a commit's or copy's reference to it): the hardware performs
+    /// two of them atomically, so they commute, but each is a write for every ordinary effect,
+    /// which orders the object's `init` and `inval` and any reuse of its bytes.
+    Mbarrier,
 }
 
 /// The associative and commutative operation of a reduction.

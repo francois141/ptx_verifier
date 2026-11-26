@@ -377,9 +377,7 @@ impl<'p> Interpreter<'p> {
     fn mbarrier_handle(&mut self, t: ThreadId, pc: InstrId, addr: u64) -> EvalResult<MbarrierId> {
         self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
         self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-        self.shared
-            .read_mbarrier(addr)
-            .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))
+        self.mbarrier_operation(t, pc, addr)
     }
 
     /// `op`'s completion performs a complete-tx of `bytes` on the mbarrier

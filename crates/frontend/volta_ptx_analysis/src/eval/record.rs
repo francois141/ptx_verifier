@@ -129,6 +129,12 @@ impl Interpreter<'_> {
         self.record_access(t, pc, space, addr, width, effect, origin);
     }
 
+    /// Record `t`'s mbarrier operation on the 8-byte object at shared address `addr`.
+    pub(in crate::eval) fn record_mbarrier_access(&mut self, t: ThreadId, pc: InstrId, addr: u64) {
+        let effect = Effect::Mbarrier;
+        self.record_access(t, pc, MemSpace::Shared, addr, 8, effect, AccessOrigin::Thread);
+    }
+
     /// Record `t`'s write of an object Volta keeps outside the byte memory (a tensor map)
     /// over its bytes `[addr, addr + width)`.
     pub(in crate::eval) fn record_opaque_write(

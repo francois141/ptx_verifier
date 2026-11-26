@@ -549,6 +549,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
                     OrderingKind::Ordinary => "ordinary".to_string(),
                     OrderingKind::Atomic => "atomic".to_string(),
                     OrderingKind::Reduction(op) => format!("reduction({})", op.name()),
+                    OrderingKind::Mbarrier => "mbarrier".to_string(),
                 },
             ));
             info.push(("operand", format!("{:?}", a.role)));

@@ -70,7 +70,7 @@ An `Access(AccessId)` event points to a `MemAccess`:
 |--------------|---------------------------------------------------------------------------|
 | `space`      | `Global`, `Shared` or `Tensor` (local memory is thread-private and never recorded) |
 | `mode`       | `Read` / `Write`                                                          |
-| `ordering`   | `Ordinary`, or (NKI only) `Reduction(op)`: a read-modify-write commuting with reductions of the same `ReductionOp` (`Effect::Reduce`); no analysis records `Atomic` |
+| `ordering`   | `Ordinary`, (NKI only) `Reduction(op)`: a read-modify-write commuting with reductions of the same `ReductionOp` (`Effect::Reduce`), or (PTX only) `Mbarrier`: an mbarrier operation on its object's bytes, commuting with the others (`Effect::Mbarrier`); no analysis records `Atomic` |
 | `proxy`      | `Generic`, `Async` (TMA, `cp.async.bulk`, `tcgen05`) or `TensorMap`       |
 | `footprint`  | `Bytes { addr, width }` or a Tensor Memory `lane x column` rectangle      |
 | `role`       | which operand: `Plain`, `Source`, `Destination`, `MmaA`, `MmaB`, `Accumulator`, ... |

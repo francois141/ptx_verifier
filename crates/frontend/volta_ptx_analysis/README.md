@@ -93,7 +93,7 @@ and `eval/`; neither imports the other. Lowering is split by instruction family
 and the dispatch is in `lower/mod.rs`. Multi-statement idioms collapse here
 (`idioms.rs`): the nvcc `__symexpf` call sequence becomes `UnaryOp::Exp`, and
 the `mbarrier.try_wait` retry loop becomes one blocking `MbarrierWaitParity`.
-Features Volta does not model (`wgmma`, `activemask`, `mbarrier.inval`, ...)
+Features Volta does not model (`wgmma`, `activemask`, ...)
 are rejected as `LowerError`s. An immediate `mbarrier.init` or `mbarrier.arrive`
 count outside `[1, 2^20 - 1]` is an invalid operand; a register count outside it
 aborts the run with `EvalError::MbarrierCountOutOfRange`.

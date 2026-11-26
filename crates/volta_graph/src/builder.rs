@@ -33,6 +33,8 @@ pub enum Effect {
     Write(StoredValue),
     /// A reduction into the footprint (`OrderingKind::Reduction`), its result opaque.
     Reduce(ReductionOp),
+    /// An mbarrier operation on the object at the footprint (`OrderingKind::Mbarrier`).
+    Mbarrier,
 }
 
 /// An ordinary memory effect as the producer performs it: a [`MemAccess`] whose written value
@@ -158,6 +160,11 @@ impl GraphBuilder {
             Effect::Reduce(op) => (
                 AccessMode::Write,
                 OrderingKind::Reduction(op),
+                Some(self.value(StoredValue::Opaque)),
+            ),
+            Effect::Mbarrier => (
+                AccessMode::Write,
+                OrderingKind::Mbarrier,
                 Some(self.value(StoredValue::Opaque)),
             ),
         };

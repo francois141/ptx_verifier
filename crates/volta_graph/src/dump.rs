@@ -217,6 +217,7 @@ impl EventGraph {
                             OrderingKind::Ordinary => "ordinary".to_string(),
                             OrderingKind::Atomic => "atomic".to_string(),
                             OrderingKind::Reduction(op) => format!("reduction({})", op.name()),
+                            OrderingKind::Mbarrier => "mbarrier".to_string(),
                         },
                         match a.proxy {
                             Proxy::Generic => "generic",

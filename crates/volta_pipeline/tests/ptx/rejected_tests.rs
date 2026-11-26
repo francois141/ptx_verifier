@@ -873,23 +873,6 @@ fn test_membar_levels() {
     }
 }
 
-/// `mbarrier.inval` is rejected until a check orders an mbarrier's other operations before its
-/// invalidation: a late `arrive` racing with the reuse of the object's bytes would go unnoticed.
-#[test]
-fn test_mbarrier_inval_is_not_implemented() {
-    let module = parse(&ptx!("execution_error/mbarrier_inval_is_not_implemented"));
-    match run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))) {
-        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
-            let reason = reason.unwrap_or_default();
-            assert!(
-                reason.contains("mbarrier.inval") && reason.contains("not implemented"),
-                "{reason}"
-            );
-        }
-        other => panic!("expected unsupported, got {other:?}"),
-    }
-}
-
 /// A second `mbarrier.init` of a live object, with no `mbarrier.inval` between, is undefined
 /// behavior even when one thread issues both and the fresh object is then used correctly.
 #[test]

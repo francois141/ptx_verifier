@@ -691,3 +691,23 @@ fn test_tma_store_tile_reuse_before_its_read_completes_races() {
         });
     }
 }
+
+/// Thread 0's `mbarrier.inval` right after its own wait conflicts with the other threads'
+/// waits on the object (mbarrier effects on its bytes), which nothing orders before it.
+#[test]
+fn test_mbarrier_inval_races_another_threads_wait() {
+    let mut config = AnalysisConfig::new((64, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let witnesses = conflicts(
+        &ptx!(parse "check_failure/mbarrier_inval_races_another_threads_wait"),
+        config,
+    );
+    assert_any(&witnesses, "a conflict on the mbarrier's bytes", on_shared);
+}

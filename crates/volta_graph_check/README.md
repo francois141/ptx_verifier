@@ -121,7 +121,7 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
   global/shared effects, sync or async, including `tcgen05` shared-memory
   operands and reductions. `A` is Tensor Memory effects of `tcgen05` ops. Atomics
   are in neither; they are outside the contract. `commute`: two reductions with
-  one `ReductionOp`, which `MemoryConflict` never pairs.
+  one `ReductionOp`, or two mbarrier operations, which `MemoryConflict` never pairs.
 - `pipeline.rs`: `E_pipeline`, the pairs the PTX ISA (9.7.18.6.2) pipelines
   without explicit sync. These are same-thread `tcgen05.mma` chains on one
   accumulator, a same-thread `tcgen05.cp` then `tcgen05.mma` on the cells the copy

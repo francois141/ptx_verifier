@@ -1744,10 +1744,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 self.record_mma_commit(t, id);
                 self.record_mbarrier_arrival(t, pc, id, (1, 0), ArrivalOrdering::AsyncTracked);
                 let before = self.mbarriers.completed_phases(id);
@@ -1766,10 +1763,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 let thread = &mut self.threads[t];
                 let copies: Vec<PendingCopy> = std::mem::take(&mut thread.groups)
                     .into_iter()
@@ -1934,6 +1928,20 @@ impl<'p> Interpreter<'p> {
                 self.record_mbarrier_init(t, pc, id, addr, count);
             }
 
+            LoweredInstr::MbarrierInval {
+                addr_base,
+                addr_offset,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                self.shared
+                    .invalidate_mbarrier(addr)
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let invalid = Value::Scalar(self.arena.undefined());
+                self.mem_write(t, pc, MemSpace::Shared, addr, 8, invalid)?;
+            }
+
             LoweredInstr::MbarrierArrive {
                 state,
                 addr_base,
@@ -1944,10 +1952,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 let count = match count {
                     Some(op) => self.mbarrier_count_operand(t, pc, op, "mbarrier.arrive count")?,
                     None => 1,
@@ -1989,10 +1994,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 let tx_count =
                     self.non_negative_operand(t, pc, tx_count, "mbarrier.expect_tx txCount")?;
                 self.record_mbarrier_expect_tx(t, pc, id, tx_count);
@@ -2008,10 +2010,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 let tx_count =
                     self.non_negative_operand(t, pc, tx_count, "mbarrier.complete_tx txCount")?;
                 self.record_mbarrier_complete_tx(t, pc, id, tx_count);
@@ -2030,10 +2029,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let id = self
-                    .shared
-                    .read_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
                 let phase_parity = match self.concrete_operand(
                     t,
                     pc,
@@ -2061,6 +2057,22 @@ impl<'p> Interpreter<'p> {
 
         self.threads[t].pc = next_pc;
         Ok(())
+    }
+
+    /// The mbarrier object at shared address `addr`, which `t`'s operation reads and updates
+    /// (recorded as an mbarrier effect on its bytes).
+    pub(in crate::eval) fn mbarrier_operation(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        addr: u64,
+    ) -> EvalResult<MbarrierId> {
+        let id = self
+            .shared
+            .read_mbarrier(addr)
+            .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+        self.record_mbarrier_access(t, pc, addr);
+        Ok(id)
     }
 
     // =====================================================================

@@ -293,6 +293,14 @@ impl Memory {
         self.cells.contains_key(&addr)
     }
 
+    /// End the live `mbarrier` object at `addr` (`mbarrier.inval`), leaving its bytes
+    /// unwritten; an error if there isn't one.
+    pub fn invalidate_mbarrier(&mut self, addr: u64) -> Result<(), MemAccessError> {
+        self.read_mbarrier(addr)?;
+        self.cells.remove(&addr);
+        Ok(())
+    }
+
     /// Read the `mbarrier` handle at `addr`, erroring if there isn't a
     /// live one there (PTX ISA 9.7.14.16: every `mbarrier` op but `init`
     /// on an uninitialized object is undefined behavior).
