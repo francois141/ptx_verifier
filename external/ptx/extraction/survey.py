@@ -8,6 +8,7 @@
     uv run external/ptx/extraction/survey.py vllm FlashMLA         # some of them
     uv run external/ptx/extraction/survey.py --skip-compile        # lower the PTX already compiled
     uv run external/ptx/extraction/survey.py --jobs 4 --timeout 900
+    uv run external/ptx/extraction/survey.py vllm --only layernorm_kernels.cu   # some units
 
 Each suite names translation units of a framework's checkout in `target/ptx-sources/`
 (`just ptx-sources`) that instantiate its kernels. Each compiles with nvcc to PTX for
@@ -184,13 +185,19 @@ def ensure_image() -> None:
         sys.exit("docker build failed")
 
 
-def container_jobs(suites: list[Suite], timeout: int) -> list[dict]:
+def selected_units(suite: Suite, only: tuple[str, ...] = ()) -> list[Path]:
+    """`suite`'s units, or those whose path contains one of `only`."""
+    units = units_of(suite)
+    return [u for u in units if any(o in str(u) for o in only)] if only else units
+
+
+def container_jobs(suites: list[Suite], timeout: int, only: tuple[str, ...] = ()) -> list[dict]:
     jobs = []
     for suite in suites:
         root = f"/src/{suite.framework}"
         flags = NVCC_FLAGS + [f"-std={suite.std}"] + list(suite.flags) + (TORCH_FLAGS if suite.torch else [])
         includes = [f"-I{os.path.normpath(f'{root}/{inc}')}" for inc in suite.includes]
-        for unit in units_of(suite):
+        for unit in selected_units(suite, only):
             rel = unit.relative_to(SOURCES_DIR)
             out = ptx_path(suite, unit).relative_to(SURVEY_DIR)
             jobs.append({"unit": str(rel), "cwd": str(Path("/src") / rel.parent), "timeout": timeout,
@@ -199,12 +206,16 @@ def container_jobs(suites: list[Suite], timeout: int) -> list[dict]:
     return jobs
 
 
-def compile_all(suites: list[Suite], jobs: int, timeout: int) -> dict[str, dict]:
+def compile_all(suites: list[Suite], jobs: int, timeout: int, only: tuple[str, ...] = ()) -> dict[str, dict]:
+    """Compile the suites' units (only those `only` selects, keeping the others' PTX)."""
     ensure_image()
     for suite in suites:
-        shutil.rmtree(SURVEY_DIR / suite.framework, ignore_errors=True)
+        if not only:
+            shutil.rmtree(SURVEY_DIR / suite.framework, ignore_errors=True)
+        for unit in selected_units(suite, only):
+            ptx_path(suite, unit).unlink(missing_ok=True)
     SURVEY_DIR.mkdir(parents=True, exist_ok=True)
-    work = container_jobs(suites, timeout)
+    work = container_jobs(suites, timeout, only)
     jobs_file = SURVEY_DIR / "compile_jobs.json"
     jobs_file.write_text(json.dumps(work))
     print(f"compiling {len(work)} units in {DOCKER_IMAGE}", flush=True)
@@ -259,6 +270,7 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=2, help="units compiled in parallel (nvcc is memory hungry)")
     parser.add_argument("--timeout", type=int, default=900, help="seconds per unit")
     parser.add_argument("--skip-compile", action="store_true", help="lower the PTX already in external/ptx/survey")
+    parser.add_argument("--only", action="append", default=[], help="compile only units whose path contains this")
     parser.add_argument("--csv", type=Path, default=DEFAULT_CSV)
     parser.add_argument("--inside", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -273,7 +285,8 @@ def main() -> None:
         sys.exit(f"no checkout of {missing} in {SOURCES_DIR}: run `just ptx-sources`")
 
     subprocess.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], cwd=REPO_ROOT, check=True)
-    compiled = {} if args.skip_compile else compile_all(suites, args.jobs, args.timeout)
+    only = tuple(args.only)
+    compiled = {} if args.skip_compile else compile_all(suites, args.jobs, args.timeout, only)
 
     rows = []
     for suite in suites:
