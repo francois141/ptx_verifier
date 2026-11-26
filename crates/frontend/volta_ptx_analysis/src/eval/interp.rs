@@ -1287,16 +1287,23 @@ impl<'p> Interpreter<'p> {
                 pred,
                 ty,
             } => {
-                let a = self.scalar_operand(t, pc, src_a)?;
-                let b = self.scalar_operand(t, pc, src_b)?;
-                // Reinterpret concrete arms at the instruction type first:
-                // `selp.b32 %r, -1, 0, %p` must export the canonical 4294967295
-                // (see [`Self::canon_operand`]).
-                let a = self.canon_operand(pc, *ty, a)?;
-                let b = self.canon_operand(pc, *ty, b)?;
                 let cond = self.scalar_operand(t, pc, pred)?;
-                let r = self.arena.select(expr_type(*ty), cond, a, b);
-                self.write_reg(t, *dst, Value::Scalar(r));
+                let value = if let Some((a, b)) = self.packed_arms(t, pc, src_a, src_b)? {
+                    let half = expr_type(ScalarType::B16);
+                    let lo = self.arena.select(half, cond, a.0, b.0);
+                    let hi = self.arena.select(half, cond, a.1, b.1);
+                    Value::Pair(lo, hi)
+                } else {
+                    let a = self.scalar_operand(t, pc, src_a)?;
+                    let b = self.scalar_operand(t, pc, src_b)?;
+                    // Reinterpret concrete arms at the instruction type first:
+                    // `selp.b32 %r, -1, 0, %p` must export the canonical 4294967295
+                    // (see [`Self::canon_operand`]).
+                    let a = self.canon_operand(pc, *ty, a)?;
+                    let b = self.canon_operand(pc, *ty, b)?;
+                    Value::Scalar(self.arena.select(expr_type(*ty), cond, a, b))
+                };
+                self.write_reg(t, *dst, value);
             }
 
             LoweredInstr::Cvt {
@@ -2137,6 +2144,34 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Resolve an operand that must be a scalar.
+    /// `selp.b32`'s arms as halves when one is a packed pair (a never-written register on
+    /// the other side reads as two undefined halves): selecting a word selects both halves.
+    fn packed_arms(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        a: &Operand,
+        b: &Operand,
+    ) -> EvalResult<Option<((ExprId, ExprId), (ExprId, ExprId))>> {
+        let (a, b) = (self.operand_value(t, pc, a)?, self.operand_value(t, pc, b)?);
+        let halves = |arena: &ExprArena, v: &Value| match *v {
+            Value::Pair(lo, hi) => Some((lo, hi)),
+            Value::Scalar(e) if arena.is_undefined(e) => Some((e, e)),
+            _ => None,
+        };
+        if !matches!(a, Value::Pair(..)) && !matches!(b, Value::Pair(..)) {
+            return Ok(None);
+        }
+        match (halves(&self.arena, &a), halves(&self.arena, &b)) {
+            (Some(a), Some(b)) => Ok(Some((a, b))),
+            _ => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "packed pair selected against a scalar word",
+            }),
+        }
+    }
+
     pub(in crate::eval) fn scalar_operand(
         &mut self,
         t: ThreadId,

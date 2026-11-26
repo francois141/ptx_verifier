@@ -1108,18 +1108,20 @@ def hadamard(name, rows, had_size, cta=0, dtype="bf16", check="VERIFIED", note="
     )
 
 
-# Volta gap: every instantiation stops at its first `selp.b32` over a packed b16x2 register
-# (e.g. PTX :21411 `selp.b32 %r12, %r69, %r80, %p5` in the <2, 1, 7> kernel, the fragment
-# swap before the shfl.sync.bfly) with "value kind mismatch (packed pair used as a scalar)".
+# BUG (Volta-found): each lane cp.async's its own 16-byte slot of bfrag_arr (:148), waits
+# with cp.async.wait_group (:357, which makes the copies visible to the waiting thread only)
+# and then reads other lanes' slots (b_frag_ptr[...] of real_thread_id, :440-449) with no
+# __syncwarp: a shared-memory race. The 2048 and 4096 kernels race the same way, then stop
+# at a later packed pair used as a scalar word (Volta gap).
 CASES += (
-    hadamard("hadamard_128_bf16", 8, 128, cta=1, check="ABORT",
+    hadamard("hadamard_128_bf16", 8, 128, cta=1, check="REJECTED",
              note=" (per-head rotation, head_dim 128)"),
-    hadamard("hadamard_128_bf16_tail", 6, 128, cta=1, check="ABORT",
+    hadamard("hadamard_128_bf16_tail", 6, 128, cta=1, check="REJECTED",
              note=" (last warp owns 1 of 2 chunks)"),
-    hadamard("hadamard_64_f16_small", 4, 64, dtype="f16", check="ABORT",
+    hadamard("hadamard_64_f16_small", 4, 64, dtype="f16", check="REJECTED",
              note=" (numel <= 256 path)"),
-    hadamard("hadamard_4096_bf16", 1, 4096, check="ABORT", note=" (hidden-size rotation)"),
-    hadamard("hadamard_2048_f16", 2, 2048, cta=1, dtype="f16", check="ABORT"),
+    hadamard("hadamard_4096_bf16", 1, 4096, check="REJECTED", note=" (hidden-size rotation)"),
+    hadamard("hadamard_2048_f16", 2, 2048, cta=1, dtype="f16", check="REJECTED"),
 )
 
 

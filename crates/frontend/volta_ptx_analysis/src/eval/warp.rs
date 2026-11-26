@@ -725,8 +725,10 @@ impl Interpreter<'_> {
                     self.gather_byte_fragment(pc, m, (src_b, *b_type), &elems, &mut b)?;
                 }
                 _ => {
-                    self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
-                    self.gather_f16_fragment(pc, m, src_b, &m16n8k16_f16::matrix_b(lane), &mut b)?;
+                    let elems = m16n8k16_f16::matrix_a(lane);
+                    self.gather_f16_fragment(pc, m, (src_a, *a_type), &elems, &mut a)?;
+                    let elems = m16n8k16_f16::matrix_b(lane);
+                    self.gather_f16_fragment(pc, m, (src_b, *b_type), &elems, &mut b)?;
                 }
             }
             let elems = accumulator(lane);
@@ -1016,8 +1018,10 @@ impl Interpreter<'_> {
         let mut c = Grid::new(16, 16);
         for &m in members {
             let lane = m.0 % WARP_SIZE;
-            self.gather_f16_fragment(pc, m, src_a, &m16n16k16_f16::matrix_a_row(lane), &mut a)?;
-            self.gather_f16_fragment(pc, m, src_b, &m16n16k16_f16::matrix_b_row(lane), &mut b)?;
+            let elems = m16n16k16_f16::matrix_a_row(lane);
+            self.gather_f16_fragment(pc, m, (src_a, ScalarType::F16), &elems, &mut a)?;
+            let elems = m16n16k16_f16::matrix_b_row(lane);
+            self.gather_f16_fragment(pc, m, (src_b, ScalarType::F16), &elems, &mut b)?;
             self.gather_f32_fragment(
                 pc,
                 m,
@@ -1350,7 +1354,7 @@ impl Interpreter<'_> {
         &mut self,
         pc: InstrId,
         m: ThreadId,
-        regs: &[RegId],
+        (regs, lane_ty): (&[RegId], ScalarType),
         elems: &[FragmentElement],
         grid: &mut Grid,
     ) -> EvalResult<()> {
@@ -1358,12 +1362,15 @@ impl Interpreter<'_> {
             let (lo, hi) = match self.read_reg(m, regs[elem.reg_idx]) {
                 Value::Pair(lo, hi) => (lo, hi),
                 // A never-written shared word (FlashAttention's unloaded tail rows) is two
-                // undefined halves, an error only if it reaches an output; an all-zero word
-                // (a zero-filled tile) is +0 in both halves, as f16 or bf16.
+                // undefined halves, an error only if it reaches an output; a concrete word
+                // (a zero-filled tile, Hadamard's 0x38003800) decodes at the operand type.
                 Value::Scalar(e) if self.arena.is_undefined(e) => (e, e),
-                Value::Scalar(e) if self.arena.as_int_const(e) == Some(0) => {
-                    let zero = self.arena.real(volta_expr::symbolic_full::Real::zero());
-                    (zero, zero)
+                Value::Scalar(e) if self.arena.as_int_const(e).is_some() => {
+                    let bits = self.arena.as_int_const(e).expect("a concrete word");
+                    (
+                        self.arena.int(bits & 0xFFFF),
+                        self.arena.int((bits >> 16) & 0xFFFF),
+                    )
                 }
                 _ => {
                     return Err(EvalError::ValueKindMismatch {
@@ -1373,7 +1380,8 @@ impl Interpreter<'_> {
                     });
                 }
             };
-            let e = if elem.high_half == Some(true) { hi } else { lo };
+            let half = if elem.high_half == Some(true) { hi } else { lo };
+            let e = float_bits::decode_float_bits(&mut self.arena, pc, lane_ty, half)?;
             grid.set(elem.row, elem.col, e);
         }
         Ok(())

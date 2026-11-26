@@ -188,3 +188,13 @@ fires, deadlocks, launch stats) is behind the `logging` feature.
 
 Only inline unit tests of internals (e.g. `lower/tests.rs`). Every PTX-driven
 test is end-to-end in `volta_pipeline/tests/`.
+
+### Packed halves in `selp` and `mma.sync` fragments
+
+`selp.b32` with a packed-pair arm selects each half under the predicate (vLLM hadacore's
+fragment swap). An `mma.sync`/`wmma` f16 or bf16 fragment half that is a concrete word decodes
+at the operand type (a zero-filled tile is +0, hadacore's Hadamard constants `0x38003800` are
+0.5), and a never-written shared word gives two undefined halves, an error only if they reach an
+output (FlashAttention-2's unloaded tail rows). Tests: `selp_of_packed_pairs`,
+`mma_fragment_of_a_constant_word`, `mma_fragment_of_a_zero_filled_word`, and the rejected
+`mma_fragment_of_an_unwritten_word_reaches_the_output`.

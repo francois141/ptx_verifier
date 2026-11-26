@@ -2433,3 +2433,45 @@ fn test_mma_xor_popc() {
         .to_vec();
     analyze!("success/mma_xor_popc", config);
 }
+
+/// `selp.b32` between two packed pairs selects both halves.
+#[test]
+fn test_selp_of_packed_pairs() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 128,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/selp_of_packed_pairs", config);
+}
+
+/// A concrete fragment word decodes at the operand type: `0x3C003C00` is f16 `1.0, 1.0`.
+#[test]
+fn test_mma_fragment_of_a_constant_word() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 128,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/mma_fragment_of_a_constant_word", config);
+}

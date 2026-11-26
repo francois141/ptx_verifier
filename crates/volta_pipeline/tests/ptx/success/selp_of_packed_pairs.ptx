@@ -1,0 +1,30 @@
+// selp.b32 between two packed f16 pairs (vLLM hadacore's fragment swap before shfl.sync.bfly)
+// selects both halves; an even lane stores its first pair, an odd lane its second.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 8;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.b32 %r2, [%rd4];
+    ld.global.b32 %r3, [%rd4+4];
+    and.b32 %r4, %r1, 1;
+    setp.eq.u32 %p1, %r4, 0;
+    selp.b32 %r5, %r2, %r3, %p1;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.b32 [%rd5], %r5;
+    ret;
+}
