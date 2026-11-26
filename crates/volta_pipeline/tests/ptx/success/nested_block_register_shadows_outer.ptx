@@ -1,0 +1,26 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+// A `.reg` declared in a `{}` block shadows the outer one of the same name, here with
+// another type (as CuTe's inline-asm blocks do): the block's writes leave the outer
+// register alone. out[0] is the outer value, out[1] the inner one.
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %x;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.b32 %x, 5;
+    {
+        .reg .b64 %x;
+        .reg .b32 %lo;
+        mov.b64 %x, 7;
+        cvt.u32.u64 %lo, %x;
+        st.global.u32 [%rd1+4], %lo;
+    }
+    st.global.u32 [%rd1], %x;
+    ret;
+}

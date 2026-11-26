@@ -752,7 +752,8 @@ fn test_reject_minmax_modifiers() {
     assert_lowers("max.ftz.NaN.f32 %f1, %f2, %f3;");
     assert_rejected("max.xorsign.abs.f32 %f1, %f2, %f3;", ".xorsign.abs");
     assert_rejected("min.abs.f32 %f1, %f2, %f3;", ".abs");
-    assert_rejected("max.ftz.f32 %f1, %f2, %f3, %f4;", "3-input");
+    assert_lowers("max.ftz.f32 %f1, %f2, %f3, %f4;");
+    assert_rejected("min.abs.f32 %f1, %f2, %f3, %f4;", ".abs");
     assert_rejected("min.relu.s32 %r1, %r2, %r3;", ".relu");
     assert_lowers("min.f32 %f1, %f2, %f3;");
     assert_lowers("max.s32 %r1, %r2, %r3;");

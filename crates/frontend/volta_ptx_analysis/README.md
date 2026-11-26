@@ -97,7 +97,8 @@ Features Volta does not model (`wgmma`, `activemask`, ...)
 are rejected as `LowerError`s. An immediate `mbarrier.init` or `mbarrier.arrive`
 count outside `[1, 2^20 - 1]` is an invalid operand; a register count outside it
 aborts the run with `EvalError::MbarrierCountOutOfRange`.
-Every cluster holds one CTA: `.maxclusterrank` allows it, a `.reqnctapercluster` of several
+A `.reg` redeclared in a nested `{}` block is renamed for that block first (`lower/scopes.rs`),
+so the flat register table sees PTX's block scoping. Every cluster holds one CTA: `.maxclusterrank` allows it, a `.reqnctapercluster` of several
 CTAs is a `LowerError`, and `.explicitcluster` (or `.reqnctapercluster`) makes the program's
 `ClusterLaunch` explicit, which `%is_explicit_cluster` reads. `lower_entries` lowers every
 kernel entry of a module without running it (`volta parse --lower`).

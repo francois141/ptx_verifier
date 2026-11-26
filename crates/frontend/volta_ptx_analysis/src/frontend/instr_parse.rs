@@ -3595,6 +3595,9 @@ fn parse_elect_sync(
     let first = ops.next().unwrap();
     let membermask = ops.next().unwrap();
     let (dst, dst_pred) = match first {
+        Operand::PredicatePair(d, p) if d.as_slice() == ascii("_") => {
+            (Operand::Underscore, Operand::Ident(p))
+        }
         Operand::PredicatePair(d, p) => (Operand::Ident(d), Operand::Ident(p)),
         _ => {
             return Err(InstrParseError::WrongOperandCount {

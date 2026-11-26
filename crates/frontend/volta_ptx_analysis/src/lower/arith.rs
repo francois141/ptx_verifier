@@ -11,7 +11,7 @@ use crate::frontend::ast::{
 };
 
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BinOp, Clamp, LoweredInstr, Predicate, UnaryOp};
+use crate::ir::{BinOp, Clamp, LoweredInstr, Operand, Predicate, UnaryOp};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::LowerResult;
@@ -1334,6 +1334,48 @@ fn reject_minmax_modifiers(
     Ok(())
 }
 
+/// `min.f32`/`max.f32 d, a, b, c` as two binary operations. They commute, so the second reads
+/// a source the first one's write to `d` did not clobber (any, if all three are `d`).
+fn lower_three_input(
+    ctx: &mut LoweringContext,
+    op: BinOp,
+    instr_name: &str,
+    dst: &AstOperand,
+    sources: [&AstOperand; 3],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let same = |a: &AstOperand, b: &AstOperand| match (a, b) {
+        (AstOperand::Ident(x), AstOperand::Ident(y)) => x == y,
+        _ => false,
+    };
+    let last = sources.iter().position(|s| !same(s, dst)).unwrap_or(2);
+    let mut rest = (0..3).filter(|&i| i != last).map(|i| sources[i]);
+    let (x, y) = (
+        rest.next().expect("two sources"),
+        rest.next().expect("two sources"),
+    );
+    let ty = ScalarType::F32;
+    let dst_typed = ctx.resolve_dst_typed(dst)?;
+    ctx.check_dst_type(&dst_typed, ty, instr_name)?;
+    let operand = |src: &AstOperand| -> LowerResult<Operand> {
+        let typed = ctx.resolve_operand_typed(src)?;
+        ctx.check_operand_type(&typed, ty, instr_name)?;
+        Ok(typed.operand)
+    };
+    let (x, y, z) = (operand(x)?, operand(y)?, operand(sources[last])?);
+    let binop = |src_a, src_b| LoweredInstr::BinOp {
+        op,
+        dst: dst_typed.reg,
+        src_a,
+        src_b,
+        ty,
+        clamp: None,
+    };
+    ctx.emit(binop(x, y), predicate)?;
+    ctx.emit(binop(Operand::Reg(dst_typed.reg), z), predicate)?;
+    Ok(())
+}
+
 pub(super) fn lower_min(
     ctx: &mut LoweringContext,
     min: &MinInstr,
@@ -1371,8 +1413,18 @@ pub(super) fn lower_min(
             reject_minmax_modifiers("min.f32", *nan, *xorsign_abs, *abs)?;
             (ScalarType::F32, "min.f32", dst, src_a, src_b)
         }
-        MinInstr::Float32Acc { .. } => {
-            return Err(unsupported("min.f32", "3-input min"));
+        MinInstr::Float32Acc {
+            ftz: _ftz,
+            nan,
+            abs,
+            dst,
+            src_a,
+            src_b,
+            src_c,
+        } => {
+            reject_minmax_modifiers("min.f32", *nan, false, *abs)?;
+            let sources = [src_a, src_b, src_c];
+            return lower_three_input(ctx, BinOp::Min, "min.f32", dst, sources, predicate);
         }
         MinInstr::Float64 { dst, src_a, src_b } => (ScalarType::F64, "min.f64", dst, src_a, src_b),
         MinInstr::HalfF16 {
@@ -1463,8 +1515,18 @@ pub(super) fn lower_max(
             reject_minmax_modifiers("max.f32", *nan, *xorsign_abs, *abs)?;
             (ScalarType::F32, "max.f32", dst, src_a, src_b)
         }
-        MaxInstr::Float32Acc { .. } => {
-            return Err(unsupported("max.f32", "3-input max"));
+        MaxInstr::Float32Acc {
+            ftz: _ftz,
+            nan,
+            abs,
+            dst,
+            src_a,
+            src_b,
+            src_c,
+        } => {
+            reject_minmax_modifiers("max.f32", *nan, false, *abs)?;
+            let sources = [src_a, src_b, src_c];
+            return lower_three_input(ctx, BinOp::Max, "max.f32", dst, sources, predicate);
         }
         MaxInstr::Float64 { dst, src_a, src_b } => (ScalarType::F64, "max.f64", dst, src_a, src_b),
         MaxInstr::HalfF16 {

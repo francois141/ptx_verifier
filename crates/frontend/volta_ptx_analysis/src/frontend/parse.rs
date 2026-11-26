@@ -1476,7 +1476,18 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             // Underscore (sink)
             Some((_, Token::Ident(s))) if s.raw() == ascii("_") => {
-                self.next().unwrap();
+                let (_, Token::Ident(sink)) = self.next()?.unwrap() else {
+                    unreachable!("peeked an identifier");
+                };
+                // A sink paired with a predicate (`elect.sync _|p`) keeps its name.
+                if self.peek_tok()? == Some(&Token::Pipe) {
+                    self.next().unwrap();
+                    let other = self.expect_ident()?;
+                    return Ok(Operand::PredicatePair(
+                        sink.into_inner(),
+                        other.into_inner(),
+                    ));
+                }
                 Ok(Operand::Underscore)
             }
 
@@ -4449,6 +4460,23 @@ DONE:
                 );
             }
             _ => panic!("Expected CvtInstr::PackHalves, got {:?}", parsed),
+        }
+    }
+
+    /// `elect.sync _|p, mask`: a sink destination paired with the predicate (CuTe's form).
+    #[test]
+    fn test_elect_sync_sink_destination() {
+        let src = wrap_in_module(
+            ".reg .pred %p<2>;
+    elect.sync _|%p1, -1;",
+        );
+        let module = parse_ok(&src);
+        match parse_instr(get_first_instruction(&module)) {
+            ParsedInstruction::ElectSync(ElectSyncInstr { dst, dst_pred, .. }) => {
+                assert!(matches!(dst, Operand::Underscore), "{dst:?}");
+                assert!(matches!(&dst_pred, Operand::Ident(p) if p.to_string() == "%p1"));
+            }
+            other => panic!("Expected ElectSync, got {:?}", other),
         }
     }
 

@@ -10,6 +10,7 @@ mod error;
 mod idioms;
 mod mbarrier;
 mod memory;
+mod scopes;
 mod tcgen05;
 #[cfg(test)]
 mod tests;
@@ -74,6 +75,7 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
     let body = func.body.as_ref().ok_or(LowerError::NoFunctionBody {
         name: func.name.to_string(),
     })?;
+    let body = &scopes::unshadow_registers(body, module_vars);
 
     let cluster = cluster_launch(func)?;
     let mut ctx = LoweringContext::new();

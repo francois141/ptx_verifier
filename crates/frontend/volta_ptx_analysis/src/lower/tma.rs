@@ -600,7 +600,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
     Ok(())
 }
 
-/// Whether a TMA load carries `.L2::cache_hint` and so a trailing cache-policy operand.
+/// Whether a TMA load or store carries `.L2::cache_hint` and so a trailing cache-policy operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CacheHint {
     Absent,
@@ -665,8 +665,8 @@ fn lower_im2col_offsets(
     Ok(lowered)
 }
 
-/// Lower `cp.async.bulk.tensor.Nd.global.shared::cta{.tile}.bulk_group
-/// [tensorMap, {coords}], [srcMem]`, the TMA store (PTX ISA 9.7.9.26.5.2).
+/// Lower `cp.async.bulk.tensor.Nd.global.shared::cta{.tile}.bulk_group{.L2::cache_hint}
+/// [tensorMap, {coords}], [srcMem]{, cache-policy}`, the TMA store (PTX ISA 9.7.9.26.5.2).
 fn lower_cp_async_bulk_tensor_store(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -675,7 +675,14 @@ fn lower_cp_async_bulk_tensor_store(
 ) -> LowerResult<()> {
     const NAME: &str = "cp.async.bulk.tensor";
 
-    let given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    let mut given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    let cache_hint = if given.last().map(String::as_str) == Some("L2::cache_hint") {
+        given.pop();
+        CacheHint::Present
+    } else {
+        CacheHint::Absent
+    };
+    let operands = strip_cache_policy(ctx, operands, cache_hint)?;
 
     // `.tile` is the ISA's default load mode, so it may be omitted.
     let form = match given.as_slice() {
@@ -694,7 +701,8 @@ fn lower_cp_async_bulk_tensor_store(
             return Err(unsupported(
                 NAME,
                 format!(
-                    "store form .{} (only .Nd.global.shared::cta{{.tile}}.bulk_group is modeled)",
+                    "store form .{} (only .Nd.global.shared::cta{{.tile}}.bulk_group{{.L2::cache_hint}} \
+                     is modeled)",
                     given.join(".")
                 ),
             ));

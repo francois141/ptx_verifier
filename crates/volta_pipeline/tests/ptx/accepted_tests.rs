@@ -955,6 +955,43 @@ fn test_tma_5d_load_and_store_stride_every_dimension() {
     );
 }
 
+/// The same copy, its store carrying `.L2::cache_hint` and a cache policy: the same `out`.
+#[test]
+fn test_tma_5d_store_with_cache_hint() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 64, ArrayKind::Input),
+        array("out", 0x20000, 4, 64, ArrayKind::Output),
+    ];
+    let map = |name: &str| {
+        FieldValue::TensorMap(Box::new(TensorMapValue {
+            array: name.to_string(),
+            elemtype: TensorElemType::F32,
+            dims: vec![4, 2, 2, 2, 2],
+            strides: vec![16, 32, 64, 128],
+            mode: TensorMapMode::Tiled {
+                box_dims: vec![4, 1, 2, 1, 2],
+            },
+            element_strides: vec![1; 5],
+            interleave: TensorInterleaveLayout::None,
+            swizzle: TensorSwizzleMode::None,
+            swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+            fill: TensorFillMode::Zero,
+        }))
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: map("in"),
+        },
+        StructField {
+            offset: 128,
+            value: map("out"),
+        },
+    ])];
+    analyze!("success/tma_5d_store_with_cache_hint", config);
+}
+
 /// The Gluon tutorial's GPU-checked multi-image im2col load: the 16-pixel column from
 /// pixel (n, h, w) = (0, 1, 2) of a box spanning [-1, 2] reads image pixels 6, -, 8, 9,
 /// 10, -, -, -, -, -, 16, 17, 18, -, 20, 21 (`-` zero-filled), as the tutorial's 7, 0, 9, ...
@@ -1518,13 +1555,39 @@ fn test_add_sat_f32_concrete_clamps() {
     analyze!("success/add_sat_f32_concrete_clamps", config);
 }
 
+/// A `.reg` redeclared in a `{}` block (another type) shadows the outer register only there.
+#[test]
+fn test_nested_block_register_shadows_outer() {
+    analyze!(
+        "success/nested_block_register_shadows_outer",
+        out_only_config(4, 2)
+    );
+}
+
+/// Three-input `max.f32`/`min.f32` (sm_100), a destination aliasing a source included.
+#[test]
+fn test_max_min_three_inputs() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 3, ArrayKind::Input),
+        array("out", 0x20000, 4, 2, ArrayKind::Output),
+    ];
+    config.params = ["in", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/max_min_three_inputs", config);
+}
+
 /// `mbarrier.inval` after a CTA barrier that orders every thread's wait before it, then a
 /// reuse of the object's bytes: race free.
 #[test]
 fn test_mbarrier_inval_after_every_wait_is_accepted() {
     let mut config = out_only_config(4, 1);
     config.block_dim = (64, 1, 1);
-    analyze!("success/mbarrier_inval_after_every_wait_is_accepted", config);
+    analyze!(
+        "success/mbarrier_inval_after_every_wait_is_accepted",
+        config
+    );
 }
 
 /// The two-source `cvt.rn.relu.bf16x2.f32 d, a, b` clamps each half at zero, `a` going to
