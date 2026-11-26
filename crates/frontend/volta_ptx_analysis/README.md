@@ -119,7 +119,8 @@ constants fold eagerly.
   run ends **stuck** (deadlock). Exited threads count as arrived (Sync').
 - **Concreteness**: addresses, branch conditions and sync parameters must be
   concrete, i.e. depend only on thread ids and concrete parameters. Otherwise the
-  run fails with `NotConcrete`. Only CTA 0 runs; it stands for the grid.
+  run fails with `NotConcrete`. One CTA runs, block (0, 0, 0) unless `AnalysisConfig::cta`
+  (a launch file's `cta`) names another; it stands for the grid.
 - **Families**: `arithm.rs` (ALU, `cvt`, width canonicalization), `warp.rs`
   (`shfl`, `ldmatrix`, `mma.sync`, `wmma`, warp-scoped `tcgen05`),
   `cp_async.rs`, `async_bulk.rs` (TMA, `cp.async.bulk`), `mbarrier.rs`,

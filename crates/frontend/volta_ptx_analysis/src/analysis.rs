@@ -195,9 +195,13 @@ fn provenance(
     config: &AnalysisConfig,
     program: &LoweredProgram,
 ) -> Provenance {
+    let analyzed = match config.cta {
+        (0, 0, 0) => Assumption::SingleCtaAnalyzed,
+        id => Assumption::SingleWorkgroupAnalyzed { id },
+    };
     let mut assumptions = vec![
         Assumption::StructuredCta,
-        Assumption::SingleCtaAnalyzed,
+        analyzed,
         Assumption::SingleCtaCluster,
         Assumption::NeverStealClusterLaunchControl,
         Assumption::ExitedThreadsArrive,

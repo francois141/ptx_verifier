@@ -1555,6 +1555,15 @@ fn test_add_sat_f32_concrete_clamps() {
     analyze!("success/add_sat_f32_concrete_clamps", config);
 }
 
+/// A launch's `cta` is the block analyzed: `%ctaid` and `%clusterid` read it.
+#[test]
+fn test_analyzed_cta_is_the_launch_files() {
+    let mut config = out_only_config(4, 3);
+    config.grid_dim = (4, 2, 1);
+    config.cta = (3, 1, 0);
+    analyze!("success/analyzed_cta_is_the_launch_files", config);
+}
+
 /// A never-written shared slot loaded and then selected away by a concrete `selp` (CUB's
 /// partial-tile reduction) reaches no output.
 #[test]

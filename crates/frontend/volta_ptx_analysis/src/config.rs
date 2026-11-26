@@ -152,10 +152,12 @@ impl ArrayDef {
 /// Full configuration for analyzing one kernel.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
-    /// Threads per block; the CTA under analysis is block (0,0,0)
+    /// Threads per block
     pub block_dim: (u32, u32, u32),
     /// Grid dimensions (only used for `%nctaid`)
     pub grid_dim: (u32, u32, u32),
+    /// The block under analysis (`%ctaid`), inside the grid; (0, 0, 0) by default
+    pub cta: (u32, u32, u32),
     /// Parameter values in `ParamId` (declaration) order
     pub params: Vec<ParamValue>,
     /// Global-memory arrays
@@ -175,6 +177,7 @@ impl AnalysisConfig {
         Self {
             block_dim,
             grid_dim: (1, 1, 1),
+            cta: (0, 0, 0),
             params: Vec::new(),
             arrays: Vec::new(),
             global_values: Vec::new(),

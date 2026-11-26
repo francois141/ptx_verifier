@@ -2374,9 +2374,10 @@ impl<'p> Interpreter<'p> {
             SpecialRegKind::NtidX => self.config.block_dim.0 as i64,
             SpecialRegKind::NtidY => self.config.block_dim.1 as i64,
             SpecialRegKind::NtidZ => self.config.block_dim.2 as i64,
-            // The CTA under analysis is always block (0,0,0) (paper: CTAs
-            // are checked pairwise at block 0).
-            SpecialRegKind::CtaidX | SpecialRegKind::CtaidY | SpecialRegKind::CtaidZ => 0,
+            // The one CTA under analysis, block (0, 0, 0) unless the launch names another.
+            SpecialRegKind::CtaidX | SpecialRegKind::ClusteridX => self.config.cta.0 as i64,
+            SpecialRegKind::CtaidY | SpecialRegKind::ClusteridY => self.config.cta.1 as i64,
+            SpecialRegKind::CtaidZ | SpecialRegKind::ClusteridZ => self.config.cta.2 as i64,
             SpecialRegKind::NctaidX => self.config.grid_dim.0 as i64,
             SpecialRegKind::NctaidY => self.config.grid_dim.1 as i64,
             SpecialRegKind::NctaidZ => self.config.grid_dim.2 as i64,
@@ -2385,10 +2386,7 @@ impl<'p> Interpreter<'p> {
             SpecialRegKind::ClusterCtaidX
             | SpecialRegKind::ClusterCtaidY
             | SpecialRegKind::ClusterCtaidZ
-            | SpecialRegKind::ClusterCtarank
-            | SpecialRegKind::ClusteridX
-            | SpecialRegKind::ClusteridY
-            | SpecialRegKind::ClusteridZ => 0,
+            | SpecialRegKind::ClusterCtarank => 0,
             SpecialRegKind::ClusterNctaidX
             | SpecialRegKind::ClusterNctaidY
             | SpecialRegKind::ClusterNctaidZ

@@ -926,7 +926,10 @@ pub enum LoweredInstr {
 
     /// `mbarrier.inval{.shared{::cta}}.b64 [addr]`: end the live object at `addr_base +
     /// addr_offset`, an ordinary write of its 8 bytes.
-    MbarrierInval { addr_base: Operand, addr_offset: i64 },
+    MbarrierInval {
+        addr_base: Operand,
+        addr_offset: i64,
+    },
 
     /// `mbarrier.arrive{.expect_tx}`: one arrival (or `count`), optionally
     /// bumping the expected tx count. `state` gets the opaque phase token;

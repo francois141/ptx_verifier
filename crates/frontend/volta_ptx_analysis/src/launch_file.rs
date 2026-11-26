@@ -7,6 +7,7 @@
 //!   "kernel": "add_kernel",
 //!   "block": 128,
 //!   "grid": [4, 1, 1],
+//!   "cta": [3, 0, 0],
 //!   "cluster": [1, 1, 1],
 //!   "dynamic_shared_bytes": 0,
 //!   "arrays": [
@@ -29,7 +30,8 @@
 //! ```
 //!
 //! Only `block` is required. `block`, `grid` and `cluster` are a number or one to
-//! three numbers (missing ones are 1). A `cluster` of several CTAs is rejected:
+//! three numbers (missing ones are 1); `cta`, the block analyzed (`%ctaid`, by default
+//! the first), likewise, its missing ones 0. A `cluster` of several CTAs is rejected:
 //! Volta models one CTA per cluster, and the PTX of a kernel launched with
 //! cluster dimensions need not declare them. An array's `kind` is `in`, `out`,
 //! `inout` or `index`; its element size is a `dtype` (`f32`, `bf16`, `u8`,
@@ -98,6 +100,16 @@ impl LaunchFile {
 
         if let Some(grid) = raw.grid {
             config.grid_dim = grid.resolve("grid")?;
+        }
+        if let Some(cta) = raw.cta {
+            let (x, y, z) = cta.resolve_from_zero("cta")?;
+            let (gx, gy, gz) = config.grid_dim;
+            if x >= gx || y >= gy || z >= gz {
+                return Err(format!(
+                    "`cta` [{x}, {y}, {z}] lies outside the grid [{gx}, {gy}, {gz}]"
+                ));
+            }
+            config.cta = (x, y, z);
         }
         if let Some(cluster) = raw.cluster {
             let (x, y, z) = cluster.resolve("cluster")?;
@@ -205,6 +217,7 @@ struct RawLaunch {
     kernel: Option<String>,
     block: RawDims,
     grid: Option<RawDims>,
+    cta: Option<RawDims>,
     cluster: Option<RawDims>,
     #[serde(default)]
     dynamic_shared_bytes: u64,
@@ -229,14 +242,23 @@ enum RawDims {
 
 impl RawDims {
     fn resolve(self, field: &str) -> Result<(u32, u32, u32), String> {
+        self.resolve_with(field, 1)
+    }
+
+    /// A coordinate: its missing dimensions are 0.
+    fn resolve_from_zero(self, field: &str) -> Result<(u32, u32, u32), String> {
+        self.resolve_with(field, 0)
+    }
+
+    fn resolve_with(self, field: &str, missing: u32) -> Result<(u32, u32, u32), String> {
         let dims = match self {
             RawDims::One(x) => vec![x],
             RawDims::Many(dims) => dims,
         };
 
         match dims[..] {
-            [x] => Ok((x, 1, 1)),
-            [x, y] => Ok((x, y, 1)),
+            [x] => Ok((x, missing, missing)),
+            [x, y] => Ok((x, y, missing)),
             [x, y, z] => Ok((x, y, z)),
             _ => Err(format!(
                 "`{field}` takes one to three numbers, got {}",
@@ -803,6 +825,9 @@ mod tests {
         assert!(error(r#"{"block": 32, "grids": 2}"#).contains("unknown field `grids`"));
         assert!(error(r#"{"block": 32, "cluster": [2, 1, 1]}"#).contains("one CTA per cluster"));
         assert!(LaunchFile::from_json(r#"{"block": 32, "cluster": [1, 1, 1]}"#).is_ok());
+        let launch = LaunchFile::from_json(r#"{"block": 32, "grid": [4, 2], "cta": [3, 1]}"#);
+        assert_eq!(launch.unwrap().config.cta, (3, 1, 0));
+        assert!(error(r#"{"block": 32, "grid": 4, "cta": 4}"#).contains("outside the grid"));
 
         assert!(
             error(r#"{"block": 32, "params": [{"int": 1, "float": 1.0}]}"#)
