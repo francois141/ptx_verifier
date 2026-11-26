@@ -169,11 +169,16 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--table", type=Path, default=DEFAULT_TABLE)
+    parser.add_argument("--volta", type=Path, help="a volta binary to run (default: build the release one)")
     args = parser.parse_args()
     if unknown := [f for f in args.frameworks if f not in FRAMEWORKS]:
         parser.error(f"unknown frameworks {unknown}")
 
-    subprocess.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], cwd=REPO_ROOT, check=True)
+    global VOLTA
+    if args.volta:
+        VOLTA = args.volta.resolve()
+    else:
+        subprocess.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], cwd=REPO_ROOT, check=True)
     results = []
     for framework in args.frameworks or FRAMEWORKS:
         path = PTX_ROOT / framework / "cases.py"
