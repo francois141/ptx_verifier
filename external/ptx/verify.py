@@ -12,6 +12,9 @@ compiles the units the selected cases name); its launch file is written to
 verdict is the one it expects. `--table` (by default `output/ptx_table.md`) lists every
 case's verdict, as `external/amd/table.py` does for the AMD libraries. The exit status is 1
 if any case's verdict is not its expected one.
+
+Every run goes through `memcap.py`: killed past `--mem-gb` (a case verdict of MEMORY), and
+`--jobs` is lowered so that jobs x cap stays within half the machine's memory.
 """
 
 import argparse
@@ -30,6 +33,7 @@ VOLTA = REPO_ROOT / "target" / "release" / "volta"
 SURVEY_DIR = PTX_ROOT / "survey"
 FRAMEWORKS = ("vllm", "TensorRT-LLM", "flash-attention")
 DEFAULT_TABLE = PTX_ROOT / "output" / "ptx_table.md"
+MEMCAP = None  # memcap.py, loaded in main
 
 ENTRY = re.compile(r"^\.visible \.entry (\S+?)\(", re.MULTILINE)
 
@@ -110,7 +114,12 @@ def verdict_of(output: str, has_spec: bool) -> str:
     return "REJECTED"
 
 
-def run_case(framework: str, case, timeout: int) -> dict:
+def physical_memory_gb() -> float:
+    out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout
+    return int(out) / 2**30 if out.strip().isdigit() else 16.0
+
+
+def run_case(framework: str, case, timeout: int, mem_gb: float) -> dict:
     start = time.time()
     result = {"framework": framework, "case": case.name, "expected": case.check,
               "description": case.description}
@@ -122,12 +131,19 @@ def run_case(framework: str, case, timeout: int) -> dict:
         path.write_text(json.dumps(launch_file(framework, case, kernel), indent=2) + "\n")
         command = [str(VOLTA), "--no-log-file", "solve", str(ptx), "--config", str(path),
                    "--print-outputs", "0"]
-        run = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-        output = run.stdout + run.stderr
-        result["verdict"] = verdict_of(output, case.spec is not None)
-        result["detail"] = detail_of(output)
-    except subprocess.TimeoutExpired:
-        result["verdict"], result["detail"] = "UNKNOWN", f"no verdict within {timeout}s"
+        log = path.with_suffix(".out")
+        with log.open("w") as sink:
+            status, note = MEMCAP.run(command, mem_gb, timeout, stdout=sink,
+                                      stderr=subprocess.STDOUT, text=True)
+        output = log.read_text()
+        log.unlink()
+        if status == MEMCAP.KILLED_FOR_MEMORY:
+            result["verdict"], result["detail"] = "MEMORY", note
+        elif status == MEMCAP.KILLED_FOR_TIME:
+            result["verdict"], result["detail"] = "UNKNOWN", f"no verdict within {timeout}s"
+        else:
+            result["verdict"] = verdict_of(output, case.spec is not None)
+            result["detail"] = detail_of(output)
     except (LookupError, FileNotFoundError) as error:
         result["verdict"], result["detail"] = "ERROR", str(error)
     result["seconds"] = round(time.time() - start, 1)
@@ -175,16 +191,26 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--table", type=Path, default=DEFAULT_TABLE)
+    parser.add_argument("--mem-gb", type=float, default=6.0,
+                        help="kill a run past this much resident memory (GiB)")
     parser.add_argument("--volta", type=Path, help="a volta binary to run (default: build the release one)")
     args = parser.parse_args()
     if unknown := [f for f in args.frameworks if f not in FRAMEWORKS]:
         parser.error(f"unknown frameworks {unknown}")
 
-    global VOLTA
+    global VOLTA, MEMCAP
+    MEMCAP = load(PTX_ROOT / "memcap.py", "memcap")
+    budget = physical_memory_gb() / 2
+    jobs = max(1, min(args.jobs, int(budget // args.mem_gb)))
+    if jobs < args.jobs:
+        print(f"running {jobs} jobs: {args.jobs} x {args.mem_gb} GB would exceed {budget:.0f} GB")
     if args.volta:
         VOLTA = args.volta.resolve()
     else:
-        subprocess.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], cwd=REPO_ROOT, check=True)
+        status, note = MEMCAP.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], 12.0,
+                                  None, cwd=REPO_ROOT)
+        if status:
+            sys.exit(note or f"cargo build failed ({status})")
     results = []
     for framework in args.frameworks or FRAMEWORKS:
         path = PTX_ROOT / framework / "cases.py"
@@ -194,8 +220,8 @@ def main() -> int:
         cases = [c for c in registry.CASES if args.k in c.name]
         if args.build:
             build(framework, cases)
-        with ThreadPoolExecutor(args.jobs) as pool:
-            for r in pool.map(lambda c: run_case(framework, c, args.timeout), cases):
+        with ThreadPoolExecutor(jobs) as pool:
+            for r in pool.map(lambda c: run_case(framework, c, args.timeout, args.mem_gb), cases):
                 status = "PASS" if r["passed"] else "FAIL"
                 note = "" if r["verdict"] == r["expected"] else f" (expected {r['expected']})"
                 print(f"{status} {framework}/{r['case']}: {r['verdict']}{note} {r['seconds']}s"
