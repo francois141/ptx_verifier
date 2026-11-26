@@ -62,12 +62,15 @@ def param(arg) -> dict:
         return {**label, "int": arg.value}
     if kind == "Float":
         return {**label, "float": arg.value}
+    if kind == "Struct":
+        return {**label, "struct": [dict(f) for f in arg.fields]}
     raise TypeError(f"unknown argument {arg!r}")
 
 
 def array(a) -> dict:
     placed = {"base": hex(a.base)} if getattr(a, "base", None) is not None else {}
-    return {"name": a.name, "kind": a.kind, "dtype": a.dtype, "shape": list(a.shape), **placed}
+    given = {"contents": list(a.contents)} if getattr(a, "contents", None) is not None else {}
+    return {"name": a.name, "kind": a.kind, "dtype": a.dtype, "shape": list(a.shape), **placed, **given}
 
 
 def launch_file(framework: str, case, kernel: str) -> dict:
@@ -77,6 +80,7 @@ def launch_file(framework: str, case, kernel: str) -> dict:
         "kernel": kernel,
         "grid": list(case.grid),
         "block": case.block,
+        **({"dynamic_shared_bytes": case.smem} if getattr(case, "smem", 0) else {}),
         **({"cta": list(case.cta)} if any(case.cta) else {}),
         "arrays": [array(a) for a in case.arrays],
         "params": [param(a) for a in case.args],
@@ -99,7 +103,9 @@ def verdict_of(output: str, has_spec: bool) -> str:
         return "ERROR"
     if "error:" in output and "VERDICT" not in output:
         return "ABORT"
-    if "every graph check passed" in output:
+    if "the trace generator aborted" in output:
+        return "ABORT"
+    if "every graph check passed" in output or "GRAPH VERIFICATION: VERIFIED" in output:
         return "VERIFIED"
     return "REJECTED"
 
@@ -134,7 +140,7 @@ def detail_of(output: str) -> str:
     for line in output.splitlines():
         line = line.strip()
         if line.startswith(("error:", "equivalence:", "evidence:", "----------", "expected ")) \
-                or "FAIL" in line or "panicked" in line:
+                or "FAIL" in line or "panicked" in line or "execution stopped" in line:
             return " ".join(line.split())[:300]
     return ""
 
