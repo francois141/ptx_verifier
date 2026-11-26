@@ -11,6 +11,7 @@ it). A run is RACE-FREE when the graph checks verify it, a RACE-CONDITION
 when a memory-conflict, proxy-order or tensor-order check fails, CHECK-FAILED
 or DEADLOCK when another check fails, UNSUPPORTED when it reaches a construct
 Volta does not model, and UNKNOWN when it has no verdict within `--timeout`.
+Every run goes through `memcap.py`, MEMORY when killed past `--mem-gb` (default 6).
 Each framework's outcomes go to `output/<framework>.csv`; the exit status is 1
 if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
 """
@@ -22,9 +23,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import memcap  # noqa: E402
 
 EXTERNAL_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = EXTERNAL_ROOT.parent.parent
@@ -44,6 +49,7 @@ class Outcome(enum.Enum):
     DEADLOCK = "DEADLOCK"
     UNSUPPORTED = "UNSUPPORTED"
     UNKNOWN = "UNKNOWN"
+    MEMORY = "MEMORY"
     ERROR = "ERROR"
 
 
@@ -73,6 +79,7 @@ OUTCOME_CODES = {
     Outcome.DEADLOCK: (BOLD, RED),
     Outcome.UNSUPPORTED: (BOLD, YELLOW),
     Outcome.UNKNOWN: (BOLD, YELLOW),
+    Outcome.MEMORY: (BOLD, YELLOW),
     Outcome.ERROR: (BOLD, RED),
 }
 
@@ -151,12 +158,13 @@ def classify(report: CliReport, stderr: str) -> tuple[Outcome, str]:
 
 
 def build_volta() -> None:
-    build = subprocess.run(
-        ["cargo", "build", "--release", "--quiet", "-p", "volta_cli", "--features", "logging"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryFile("w+") as err:
+        status, note = memcap.run(
+            ["cargo", "build", "--release", "--quiet", "-p", "volta_cli", "--features", "logging"],
+            12.0, None, cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=err, text=True,
+        )
+        err.seek(0)
+        build = subprocess.CompletedProcess([], status, "", err.read() + note)
     if build.returncode == 0:
         return
     if not VOLTA.exists():
@@ -177,7 +185,7 @@ class Run:
     detail: str
 
 
-def check(launch: Path, root: Path, timeout: float) -> Run:
+def check(launch: Path, root: Path, timeout: float, mem_gb: float) -> Run:
     name = str(launch.relative_to(root)).removesuffix(".launch.json")
     ptx = launch.with_name(launch.name.split(".")[0] + ".ptx")
     # Rendering outputs can cost GBs (shared subterms print as trees); counts suffice.
@@ -186,10 +194,15 @@ def check(launch: Path, root: Path, timeout: float) -> Run:
         "--print-outputs", "0", "--no-profile",
     ]
     start = time.perf_counter()
-    try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        status, note = memcap.run(command, mem_gb, timeout, stdout=out, stderr=err, text=True)
+        out.seek(0)
+        err.seek(0)
+        done = subprocess.CompletedProcess(command, status, out.read(), err.read())
+    if status == memcap.KILLED_FOR_TIME:
         return Run(name, Outcome.UNKNOWN, timeout, f"no verdict within {timeout:.0f}s")
+    if status == memcap.KILLED_FOR_MEMORY:
+        return Run(name, Outcome.MEMORY, time.perf_counter() - start, note)
     try:
         outcome, detail = classify(parse_cli(done.stdout), done.stderr)
     except VoltaFailure as failure:
@@ -197,7 +210,7 @@ def check(launch: Path, root: Path, timeout: float) -> Run:
     return Run(name, outcome, time.perf_counter() - start, detail)
 
 
-def check_framework(framework: str, match: str, timeout: float, style: Style) -> bool:
+def check_framework(framework: str, match: str, timeout: float, mem_gb: float, style: Style) -> bool:
     """Run every matching launch file of `framework` in order; whether any run failed."""
     root = EXTERNAL_ROOT / framework
     launches = [p for p in sorted(root.rglob("*.launch.json")) if match in str(p.relative_to(root))]
@@ -205,7 +218,7 @@ def check_framework(framework: str, match: str, timeout: float, style: Style) ->
     width = max((len(str(p.relative_to(root))) for p in launches), default=0) - len(".launch.json")
     runs = []
     for launch in launches:
-        run = check(launch, root, timeout)
+        run = check(launch, root, timeout, mem_gb)
         runs.append(run)
         painted = style.paint(f"{run.outcome.value:<{OUTCOME_WIDTH}}", *OUTCOME_CODES[run.outcome])
         print(f"{run.name:<{width}}  {painted}  {run.seconds:6.1f}s  {run.detail}", flush=True)
@@ -228,12 +241,18 @@ def main() -> int:
     parser.add_argument("--framework", choices=FRAMEWORKS, help="check only this framework (default: all, in order)")
     parser.add_argument("-k", dest="match", default="", help="only launches whose name contains this")
     parser.add_argument("--timeout", type=float, default=60, help="seconds per run (default 60)")
+    parser.add_argument("--mem-gb", type=float, default=6.0, help="kill a run past this resident memory (GiB)")
+    parser.add_argument("--volta", type=Path, help="a volta binary to run (default: build the release one)")
     args = parser.parse_args()
 
+    global VOLTA
     style = Style(sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
-    build_volta()
+    if args.volta:
+        VOLTA = args.volta.resolve()
+    else:
+        build_volta()
     frameworks = (args.framework,) if args.framework else FRAMEWORKS
-    failed = [check_framework(f, args.match, args.timeout, style) for f in frameworks]
+    failed = [check_framework(f, args.match, args.timeout, args.mem_gb, style) for f in frameworks]
     return 1 if any(failed) else 0
 
 
