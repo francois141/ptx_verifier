@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use volta_graph::{AccessMode, AsyncOpKind, Footprint, OperandRole, Proxy};
+use volta_graph::{AccessMode, AsyncOpKind, EventId, Footprint, OperandRole, Proxy};
 use volta_graph_check::pipeline::{PipelineRule, pipeline_edges};
 
 #[test]
@@ -179,4 +179,95 @@ fn loads_and_stores_of_different_warps_are_not_pipelined() {
     let (_, read) = s.tmem_ld(32, 0, (0, 1));
     let (g, _) = s.completed(33);
     assert!(pipeline_edges(&g).edge(&g, write, read).is_none());
+}
+
+/// A `tcgen05.cp` writing scale factors and an MMA by `issuer` reading them as `scale_A`, with
+/// an accumulator write of its own.
+fn copy_and_scaled_mma(
+    s: &mut Scenario,
+    copier: u32,
+    issuer: u32,
+    copy_first: bool,
+) -> (EventId, Vec<EventId>) {
+    let copy = |s: &mut Scenario| {
+        let (_, w) = s.tmem_op(
+            copier,
+            AsyncOpKind::Tcgen05Cp,
+            &[Cells {
+                mode: AccessMode::Write,
+                role: OperandRole::Destination,
+                lanes: (0, 128),
+                cols: (16, 4),
+            }],
+        );
+        w[0]
+    };
+    let mma = |s: &mut Scenario| {
+        s.tmem_op(
+            issuer,
+            AsyncOpKind::Tcgen05Mma,
+            &[
+                Cells {
+                    mode: AccessMode::Read,
+                    role: OperandRole::MmaScaleA,
+                    lanes: (0, 128),
+                    cols: (16, 1),
+                },
+                Cells::accumulator(AccessMode::Write, (0, 8)),
+            ],
+        )
+        .1
+    };
+    if copy_first {
+        let w = copy(s);
+        (w, mma(s))
+    } else {
+        let m = mma(s);
+        (copy(s), m)
+    }
+}
+
+#[test]
+fn a_copy_then_an_mma_of_one_thread_is_pipelined_on_the_scales() {
+    let mut s = Scenario::new(1);
+    let (write, mma) = copy_and_scaled_mma(&mut s, 0, 0, true);
+    let (g, _) = s.completed(1);
+    let edges = pipeline_edges(&g);
+    let edge = edges.edge(&g, write, mma[0]).expect("an eligible pair");
+    assert_eq!(edge.rule, PipelineRule::CopyThenMma);
+    assert_eq!(
+        edge.roles,
+        (OperandRole::Destination, OperandRole::MmaScaleA)
+    );
+    assert_eq!(
+        edge.cells,
+        Footprint::Tensor {
+            lane: 0,
+            lanes: 128,
+            col: 16,
+            cols: 1
+        }
+    );
+    assert!(
+        edges.edge(&g, write, mma[1]).is_none(),
+        "not the accumulator"
+    );
+    assert_eq!(edges.edges(&g).len(), 1);
+}
+
+#[test]
+fn a_copy_after_an_mma_or_by_another_thread_is_not_pipelined() {
+    let mut s = Scenario::new(2);
+    let (later_write, mma) = copy_and_scaled_mma(&mut s, 0, 0, false);
+    let (other_write, other_mma) = copy_and_scaled_mma(&mut s, 1, 0, true);
+    let (g, _) = s.completed(2);
+    let edges = pipeline_edges(&g);
+    assert!(
+        edges.edge(&g, later_write, mma[0]).is_none(),
+        "the MMA came first"
+    );
+    assert!(
+        edges.edge(&g, other_write, other_mma[0]).is_none(),
+        "another issuer"
+    );
 }

@@ -2270,6 +2270,23 @@ fn test_tcgen05_mma_kind_mxf8f6f4_symbolic_scales() {
     analyze!("success/tcgen05_mma_kind_mxf8f6f4_symbolic_scales", config);
 }
 
+/// The same MMA, its scales copied from shared memory by `tcgen05.cp.32x128b.warpx4` and
+/// read with no commit in between (the pipelined `tcgen05.cp` -> `tcgen05.mma` pair): the
+/// same `D[0][0]`, and no tensor-order failure.
+#[test]
+fn test_tcgen05_cp_scales_feed_block_scaled_mma() {
+    let mut config = AnalysisConfig::new((128, 1, 1));
+    config.arrays = vec![
+        array("sa", 0x10000, 1, 512, ArrayKind::Input),
+        array("sb", 0x11000, 1, 512, ArrayKind::Input),
+        array("out", 0x20000, 4, 1, ArrayKind::Output),
+    ];
+    config.params = ["sa", "sb", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/tcgen05_cp_scales_feed_block_scaled_mma", config);
+}
+
 /// One warp's `mma.sync.m16n8k256.b1.xor.popc` over a 16x8-word A, an 8x8-word B (one row
 /// per output column) and seed C: out[m, n] = seed[m, n] + sum_w popc(a[m, w] ^ b[n, w]).
 #[test]

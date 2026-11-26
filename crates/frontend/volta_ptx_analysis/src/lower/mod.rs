@@ -53,9 +53,9 @@ use memory::{
     lower_store,
 };
 use tcgen05::{
-    lower_tcgen05_alloc, lower_tcgen05_commit, lower_tcgen05_dealloc, lower_tcgen05_fence,
-    lower_tcgen05_ld, lower_tcgen05_mma, lower_tcgen05_relinquish_alloc_permit, lower_tcgen05_st,
-    lower_tcgen05_wait,
+    lower_tcgen05_alloc, lower_tcgen05_commit, lower_tcgen05_cp, lower_tcgen05_dealloc,
+    lower_tcgen05_fence, lower_tcgen05_ld, lower_tcgen05_mma,
+    lower_tcgen05_relinquish_alloc_permit, lower_tcgen05_st, lower_tcgen05_wait,
 };
 use tma::{
     lower_cp_async_bulk, lower_cp_async_bulk_tensor, lower_fence_proxy_tensormap,
@@ -535,6 +535,11 @@ fn lower_parsed_instruction(
             modifiers,
             operands,
         } => lower_tcgen05_commit(ctx, modifiers, operands, predicate),
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Cp,
+            modifiers,
+            operands,
+        } => lower_tcgen05_cp(ctx, modifiers, operands, predicate),
         ParsedInstruction::Other {
             kind:
                 kind @ (InstrKind::WgmmaMmaAsync

@@ -1,6 +1,7 @@
 //! `tcgen05.mma` evaluation: operands read through the descriptors
 //! `tcgen05_mma` decodes (or from Tensor Memory), block-scaled by factors read
-//! from Tensor Memory for `.kind::mxf8f6f4`, D computed at issue.
+//! from Tensor Memory for `.kind::mxf8f6f4`, D computed at issue; and
+//! `tcgen05.cp`, which copies such a matrix into Tensor Memory.
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
@@ -14,7 +15,8 @@ use crate::eval::tcgen05_mma::{self, DLayout, KSelect, Major, OperandFormat};
 use crate::eval::value::Value;
 use crate::frontend::ast::ScalarType;
 use crate::ir::tcgen05::{
-    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, Tcgen05MmaScales,
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05CpShape, Tcgen05MmaA, Tcgen05MmaKind,
+    Tcgen05MmaScales,
 };
 use crate::ir::{InstrId, MemSpace, Operand};
 use volta_expr::symbolic_full::{ExprId, Real, Type, Width};
@@ -330,6 +332,64 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
             }
         }
+        self.record_mma_issued(t, op);
+        Ok(())
+    }
+
+    /// `tcgen05.cp`: copy `shape`'s shared-memory matrix, laid out as an MMA operand's
+    /// K-major rows of bytes (the canonical layouts `s_desc` describes), into Tensor Memory
+    /// from lane 0 of `taddr`'s column, one 32-bit word per column. The data lands at issue;
+    /// the copy is in flight until a waiter observes a later commit, like an MMA.
+    pub(in crate::eval) fn exec_tcgen05_cp(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        shape: Tcgen05CpShape,
+        (taddr_base, taddr_offset): (&Operand, i64),
+        s_desc: &Operand,
+    ) -> EvalResult<()> {
+        let md = self.mma_matrix_descriptor(t, pc, s_desc, "tcgen05.cp s-desc")?;
+        let taddr = self.effective_addr(t, pc, taddr_base, taddr_offset)? as u32;
+        if taddr >> 16 != 0 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "tcgen05.cp [taddr] at lane {} is not modeled (the copy starts at lane 0)",
+                    taddr >> 16
+                ),
+            });
+        }
+        let col_base = taddr & 0xFFFF;
+        let cols = shape.cols();
+        self.tensor
+            .check_range(col_base, cols)
+            .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
+
+        let op = self.record_async_issue(t, pc, AsyncOpKind::Tcgen05Cp);
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+            role: OperandRole::Source,
+        };
+        let mut lanes = Vec::new();
+        for row in 0..shape.rows() {
+            let row_lanes = shape.lanes(row);
+            for word in 0..cols {
+                let byte = 4 * u64::from(word);
+                let addr = tcgen05_mma::operand_element_addr(&md, Major::K, row.into(), byte, 1)
+                    .expect("K-major operand addresses exist for every swizzle mode");
+                let value = self.mem_read_from(t, pc, MemSpace::Shared, addr, 4, origin)?;
+                for &lane in &row_lanes {
+                    self.tensor
+                        .write(lane, col_base + word, value)
+                        .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
+                }
+            }
+            lanes.extend(row_lanes);
+        }
+        lanes.sort_unstable();
+        let destination = (AccessMode::Write, OperandRole::Destination);
+        self.record_tmem_lanes(op, t, destination, &lanes, (col_base, cols));
         self.record_mma_issued(t, op);
         Ok(())
     }

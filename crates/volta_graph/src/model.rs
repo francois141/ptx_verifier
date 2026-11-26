@@ -465,6 +465,8 @@ pub enum AsyncOpKind {
     ClcResponse,
     /// `tcgen05.mma`, tracked by later `tcgen05.commit`s of its issuer.
     Tcgen05Mma,
+    /// `tcgen05.cp` (shared memory to Tensor Memory), tracked like `tcgen05.mma`.
+    Tcgen05Cp,
     /// `tcgen05.ld`, completed by the warp's `tcgen05.wait::ld`.
     Tcgen05Ld,
     /// `tcgen05.st`, completed by the warp's `tcgen05.wait::st`.
@@ -490,6 +492,7 @@ impl AsyncOpKind {
             AsyncOpKind::TensorStoreWrite => "cp.async.bulk.tensor (store, global writes)",
             AsyncOpKind::ClcResponse => "clusterlaunchcontrol.try_cancel",
             AsyncOpKind::Tcgen05Mma => "tcgen05.mma",
+            AsyncOpKind::Tcgen05Cp => "tcgen05.cp",
             AsyncOpKind::Tcgen05Ld => "tcgen05.ld",
             AsyncOpKind::Tcgen05St => "tcgen05.st",
             AsyncOpKind::WgmmaMma { .. } => "wgmma.mma_async",

@@ -17,6 +17,11 @@
 //!     footprints, hence the same address and `M x N` shape. It covers their accumulator
 //!     (`D`) effects; `A`/`B` reads are not covered. An MMA without an accumulator write has
 //!     unknown preconditions and gets no edge.
+//!   - Copies feeding MMAs ([`PipelineRule::CopyThenMma`]): `tcgen05.cp.cta_group::1` then
+//!     `tcgen05.mma.cta_group::1`, issued by the same thread in that program order. It covers
+//!     the copy's Tensor Memory writes and the MMA's Tensor Memory operand reads (`scale_A`,
+//!     `scale_B`, `[a-tmem]`) on shared cells; an MMA's accumulator, and a copy after an MMA,
+//!     are not covered.
 //!   - Waited loads and stores ([`PipelineRule::WaitedLoadStore`]): `tcgen05.st` ->
 //!     `tcgen05.ld`, `st` -> `st` or `ld` -> `st` (pairs 11-13), issued by one warp in that
 //!     order, with the earlier operation's own `tcgen05.wait` (`::st` for a store, `::ld` for
@@ -45,6 +50,9 @@ const WARP_SIZE: u32 = 32;
 pub enum PipelineRule {
     /// `tcgen05.mma` -> `tcgen05.mma` of one thread on one accumulator.
     MmaAccumulatorChain,
+    /// `tcgen05.cp` -> `tcgen05.mma` of one thread, on the cells the copy writes and the MMA
+    /// reads as an operand.
+    CopyThenMma,
     /// `tcgen05.st` -> `.ld`, `.st` -> `.st` or `.ld` -> `.st` of one warp, the earlier one
     /// waited for in between.
     WaitedLoadStore,
@@ -61,12 +69,13 @@ pub struct PipelineEdge {
     pub cells: Footprint,
 }
 
-/// `E_pipeline` of one graph: the accumulator chains and each warp's `tcgen05.ld`/`.st`, ops
-/// in issue order.
+/// `E_pipeline` of one graph: the accumulator chains, each thread's `tcgen05.cp`s and MMAs,
+/// and each warp's `tcgen05.ld`/`.st`, ops in issue order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PipelineEdges {
     chains: Vec<Vec<AsyncOpId>>,
     position: HashMap<AsyncOpId, (usize, usize)>,
+    copies_mmas: BTreeMap<ThreadIx, Vec<AsyncOpId>>,
     loads_stores: BTreeMap<u32, Vec<AsyncOpId>>,
 }
 
@@ -111,6 +120,9 @@ pub fn pipeline_edges(graph: &EventGraph) -> PipelineEdges {
                 .or_default()
                 .push(op);
         }
+        if matches!(a.kind, AsyncOpKind::Tcgen05Cp | AsyncOpKind::Tcgen05Mma) {
+            edges.copies_mmas.entry(a.issuer).or_default().push(op);
+        }
         if a.kind != AsyncOpKind::Tcgen05Mma {
             continue;
         }
@@ -136,6 +148,7 @@ impl PipelineEdges {
     /// effects under one of the rules, `a`'s operation first.
     pub fn edge(&self, graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
         self.accumulator_chain_edge(graph, a, b)
+            .or_else(|| copy_then_mma_edge(graph, a, b))
             .or_else(|| waited_load_store_edge(graph, a, b))
     }
 
@@ -187,6 +200,17 @@ impl PipelineEdges {
                 }
             }
         }
+        for ops in self.copies_mmas.values() {
+            for (i, &x) in ops.iter().enumerate() {
+                for &y in &ops[i + 1..] {
+                    for a in effects(x) {
+                        for b in effects(y) {
+                            out.extend(copy_then_mma_edge(graph, a, b));
+                        }
+                    }
+                }
+            }
+        }
         out
     }
 }
@@ -202,6 +226,57 @@ fn accumulator_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, 
         && access.space == Space::Tensor
         && access.role == OperandRole::Accumulator)
         .then_some((op, access.footprint))
+}
+
+/// `event`'s operation and footprint, if it is a `tcgen05.cp`'s Tensor Memory write.
+fn copy_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, Footprint)> {
+    let ev = graph.event(event);
+    let (ExecContext::Async(op), EventKind::Access(acc)) = (ev.ctx, ev.kind) else {
+        return None;
+    };
+    let access = graph.access(acc);
+    (graph.async_op(op).kind == AsyncOpKind::Tcgen05Cp
+        && access.space == Space::Tensor
+        && access.mode == AccessMode::Write)
+        .then_some((op, access.footprint))
+}
+
+/// `event`'s operation, role and footprint, if it is an MMA's Tensor Memory operand read.
+fn mma_operand_read(
+    graph: &EventGraph,
+    event: EventId,
+) -> Option<(AsyncOpId, OperandRole, Footprint)> {
+    let ev = graph.event(event);
+    let (ExecContext::Async(op), EventKind::Access(acc)) = (ev.ctx, ev.kind) else {
+        return None;
+    };
+    let access = graph.access(acc);
+    (graph.async_op(op).kind == AsyncOpKind::Tcgen05Mma
+        && access.space == Space::Tensor
+        && access.mode == AccessMode::Read
+        && matches!(
+            access.role,
+            OperandRole::MmaA | OperandRole::MmaScaleA | OperandRole::MmaScaleB
+        ))
+    .then_some((op, access.role, access.footprint))
+}
+
+/// [`PipelineRule::CopyThenMma`]: `a` a `tcgen05.cp`'s write and `b` a later MMA's operand
+/// read of shared cells, both operations issued by one thread.
+fn copy_then_mma_edge(graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
+    let (x, ax) = copy_effect(graph, a)?;
+    let (y, role, by) = mma_operand_read(graph, b)?;
+    let (copy, mma) = (graph.async_op(x), graph.async_op(y));
+    if copy.issuer != mma.issuer || copy.issue >= mma.issue {
+        return None;
+    }
+    Some(PipelineEdge {
+        rule: PipelineRule::CopyThenMma,
+        from: a,
+        to: b,
+        roles: (OperandRole::Destination, role),
+        cells: shared_cells(ax, by)?,
+    })
 }
 
 /// `event`'s operation and footprint, if it is a `tcgen05.ld`/`.st`'s Tensor Memory effect.
@@ -220,8 +295,9 @@ fn load_store_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, F
 }
 
 /// Whether the PTX ISA pipelines `a`'s operation before `b`'s on these effects once both are
-/// issued by one warp (9.7.18.6.2): the accumulator effects of two MMAs on one accumulator, or
-/// the data effects of a `st` -> `ld`, `st` -> `st` or `ld` -> `st` pair. The fence protocol
+/// issued by one warp (9.7.18.6.2): the accumulator effects of two MMAs on one accumulator, a
+/// copy's writes and an MMA's operand reads, or the data effects of a `st` -> `ld`, `st` ->
+/// `st` or `ld` -> `st` pair. The fence protocol
 /// orders such a pair across the warp's threads (9.7.18.6.4.3); any other pair needs the
 /// earlier operation's completion (9.7.18.6.4.4).
 pub fn pipelinable(graph: &EventGraph, a: EventId, b: EventId) -> bool {
@@ -231,6 +307,9 @@ pub fn pipelinable(graph: &EventGraph, a: EventId, b: EventId) -> bool {
     {
         let d = accumulator(graph, x);
         return warp(x) == warp(y) && !d.is_empty() && d == accumulator(graph, y);
+    }
+    if let (Some((x, _)), Some((y, _, _))) = (copy_effect(graph, a), mma_operand_read(graph, b)) {
+        return warp(x) == warp(y);
     }
     match (load_store_effect(graph, a), load_store_effect(graph, b)) {
         (Some((x, _)), Some((y, _))) => {

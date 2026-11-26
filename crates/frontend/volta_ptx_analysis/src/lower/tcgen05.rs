@@ -7,8 +7,8 @@ use crate::frontend::ast::{
 use crate::frontend::lex::DottedIdent;
 
 use crate::ir::tcgen05::{
-    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA,
-    Tcgen05MmaKind, Tcgen05MmaScales,
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05CpShape, Tcgen05FenceDirection, Tcgen05LdStShape,
+    Tcgen05MmaA, Tcgen05MmaKind, Tcgen05MmaScales,
 };
 use crate::ir::{LoweredInstr, Operand, Predicate};
 
@@ -813,6 +813,85 @@ pub(super) fn lower_tcgen05_commit(
         LoweredInstr::Tcgen05Commit {
             addr_base,
             addr_offset,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `tcgen05.cp.cta_group::1.shape{.multicast} [taddr], s-desc` (PTX ISA 9.7.18.9) for the
+/// shapes whose Tensor Memory placement is one row per lane: `.128x256b`, `.128x128b` and
+/// `.32x128b.warpx4`. `.4x256b`, the `.64x128b.warpx2` multicasts and the decompressing
+/// `.dst_fmt.src_fmt` forms are rejected.
+pub(super) fn lower_tcgen05_cp(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.cp";
+    let mut saw_cta_group = false;
+    let mut size = None;
+    let mut warpx4 = false;
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        match modifier.to_string().as_str() {
+            shape @ ("128x256b" | "128x128b" | "32x128b") => size = Some(shape.to_string()),
+            "warpx4" => warpx4 = true,
+            shape @ ("4x256b" | "64x128b") => {
+                return Err(unsupported(
+                    NAME,
+                    format!(".{shape} (its Tensor Memory placement is not modeled)"),
+                ));
+            }
+            other if other.starts_with("warpx2") => {
+                return Err(unsupported(NAME, format!(".{other} multicast")));
+            }
+            other => {
+                return Err(unsupported(
+                    NAME,
+                    format!(".{other} (decompressing copies are not modeled)"),
+                ));
+            }
+        }
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+    let shape = match (size.as_deref(), warpx4) {
+        (Some("128x256b"), false) => Tcgen05CpShape::S128x256b,
+        (Some("128x128b"), false) => Tcgen05CpShape::S128x128b,
+        (Some("32x128b"), true) => Tcgen05CpShape::S32x128bWarpx4,
+        (size, warpx4) => {
+            return Err(LowerError::InvalidInstruction {
+                instruction: NAME.to_string(),
+                reason: format!(
+                    "shape {size:?} with{} .warpx4 (.32x128b needs .warpx4, the others take none)",
+                    if warpx4 { "" } else { "out" }
+                ),
+            });
+        }
+    };
+    let [AstOperand::Address(taddr), s_desc] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [taddr], s-desc",
+        });
+    };
+    let taddr_base = ctx.resolve_address(taddr)?;
+    let taddr_offset = ctx.get_address_offset(taddr);
+    let s_desc = ctx.resolve_operand(s_desc)?;
+    ctx.emit(
+        LoweredInstr::Tcgen05Cp {
+            shape,
+            taddr_base,
+            taddr_offset,
+            s_desc,
         },
         predicate,
     )?;

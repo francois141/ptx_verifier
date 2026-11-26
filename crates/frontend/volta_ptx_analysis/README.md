@@ -122,7 +122,8 @@ constants fold eagerly.
 - **Families**: `arithm.rs` (ALU, `cvt`, width canonicalization), `warp.rs`
   (`shfl`, `ldmatrix`, `mma.sync`, `wmma`, warp-scoped `tcgen05`),
   `cp_async.rs`, `async_bulk.rs` (TMA, `cp.async.bulk`), `mbarrier.rs`,
-  `tcgen05.rs` + `tcgen05_mma.rs`, `tensormap_replace.rs`,
+  `tcgen05.rs` + `tcgen05_mma.rs` (`tcgen05.mma`, and `tcgen05.cp` of a
+  descriptor-described shared-memory matrix into Tensor Memory), `tensormap_replace.rs`,
   `cluster_launch_control.rs` (under the never-steal assumption).
 - **Errors** (`error.rs`): `EvalError` covers things the execution itself
   cannot continue past: out-of-bounds, uninitialized reads reaching an output,

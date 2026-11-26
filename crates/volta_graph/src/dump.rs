@@ -172,6 +172,7 @@ impl EventGraph {
                 AsyncOpKind::TensorStoreWrite => "tensor-store-write".to_string(),
                 AsyncOpKind::ClcResponse => "clc-response".to_string(),
                 AsyncOpKind::Tcgen05Mma => "tcgen05-mma".to_string(),
+                AsyncOpKind::Tcgen05Cp => "tcgen05-cp".to_string(),
                 AsyncOpKind::Tcgen05Ld => "tcgen05-ld".to_string(),
                 AsyncOpKind::Tcgen05St => "tcgen05-st".to_string(),
                 AsyncOpKind::WgmmaMma { instance } => format!("wgmma#{}", instance),

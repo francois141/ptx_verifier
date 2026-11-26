@@ -1,6 +1,6 @@
 //! 5th-generation tensor core types of the IR (`tcgen05.*`): an MMA's kind and
 //! `A` operand, a `.ws` collector buffer qualifier, a `tcgen05.ld`/`.st` access
-//! shape and its Tensor Memory cells, and a `tcgen05.fence`'s direction.
+//! shape and its Tensor Memory cells, a `tcgen05.cp` shape, and a `tcgen05.fence`'s direction.
 
 use crate::ir::Operand;
 
@@ -139,4 +139,40 @@ pub enum Tcgen05FenceDirection {
     BeforeThreadSync,
     /// `::after_thread_sync`
     AfterThreadSync,
+}
+
+/// `tcgen05.cp`'s shape (and multicast) qualifier (PTX ISA 9.7.18.9): a `rows x row_bytes`
+/// shared-memory matrix copied into Tensor Memory, row `r` to lane `r`, its 32-bit words to
+/// consecutive columns. `.32x128b.warpx4` copies the 32 rows into each 32-lane partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcgen05CpShape {
+    S128x256b,
+    S128x128b,
+    S32x128bWarpx4,
+}
+
+impl Tcgen05CpShape {
+    /// Rows of the source matrix.
+    pub fn rows(self) -> u32 {
+        match self {
+            Self::S128x256b | Self::S128x128b => 128,
+            Self::S32x128bWarpx4 => 32,
+        }
+    }
+
+    /// Tensor Memory columns (32-bit words) each row fills.
+    pub fn cols(self) -> u32 {
+        match self {
+            Self::S128x256b => 8,
+            Self::S128x128b | Self::S32x128bWarpx4 => 4,
+        }
+    }
+
+    /// The Tensor Memory lanes, from the first, that source row `row` is copied to.
+    pub fn lanes(self, row: u32) -> Vec<u32> {
+        match self {
+            Self::S128x256b | Self::S128x128b => vec![row],
+            Self::S32x128bWarpx4 => (0..4).map(|partition| 32 * partition + row).collect(),
+        }
+    }
 }

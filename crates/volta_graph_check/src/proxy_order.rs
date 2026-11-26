@@ -298,6 +298,7 @@ fn completion_implies_proxy_fence(kind: AsyncOpKind) -> bool {
         | AsyncOpKind::ClcResponse => true,
         AsyncOpKind::CpAsync
         | AsyncOpKind::Tcgen05Mma
+        | AsyncOpKind::Tcgen05Cp
         | AsyncOpKind::Tcgen05Ld
         | AsyncOpKind::Tcgen05St
         | AsyncOpKind::WgmmaMma { .. }

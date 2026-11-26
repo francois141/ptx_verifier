@@ -81,7 +81,10 @@ pub fn commute(a: OrderingKind, b: OrderingKind) -> bool {
 pub fn is_tcgen05(kind: AsyncOpKind) -> bool {
     matches!(
         kind,
-        AsyncOpKind::Tcgen05Mma | AsyncOpKind::Tcgen05Ld | AsyncOpKind::Tcgen05St
+        AsyncOpKind::Tcgen05Mma
+            | AsyncOpKind::Tcgen05Cp
+            | AsyncOpKind::Tcgen05Ld
+            | AsyncOpKind::Tcgen05St
     )
 }
 

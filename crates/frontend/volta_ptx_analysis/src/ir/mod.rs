@@ -18,8 +18,8 @@ use id_collections::{IdVec, id_type};
 use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::tcgen05::{
-    Tcgen05Collector, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
-    Tcgen05MmaScales,
+    Tcgen05Collector, Tcgen05CpShape, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA,
+    Tcgen05MmaKind, Tcgen05MmaScales,
 };
 use crate::ir::tensor_map::{TensorLoadMode, TensormapFieldWrite};
 use crate::ir::types::RegCounts;
@@ -809,6 +809,16 @@ pub enum LoweredInstr {
         addr_offset: i64,
     },
 
+    /// `tcgen05.cp.cta_group::1.shape [taddr], s-desc`: an asynchronous copy of the
+    /// shared-memory matrix `s_desc` describes into Tensor Memory at `taddr`, tracked by the
+    /// issuer's later `tcgen05.commit`s like an MMA.
+    Tcgen05Cp {
+        shape: Tcgen05CpShape,
+        taddr_base: Operand,
+        taddr_offset: i64,
+        s_desc: Operand,
+    },
+
     // =========================================================================
     // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27, 9.7.9.26.5.2, 9.7.14.17)
     // =========================================================================
@@ -1068,6 +1078,7 @@ define_instr_kinds!(
     Tcgen05Mma,
     Tcgen05Fence,
     Tcgen05Commit,
+    Tcgen05Cp,
     Stmatrix,
     TensormapReplace,
     TensormapCpFenceproxy,

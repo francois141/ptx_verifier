@@ -146,7 +146,9 @@ pub fn search(d: &SearchGraph, source: AsyncOpId, target: AsyncOpId, origin: Ori
                 return false;
             };
             match op.kind {
-                AsyncOpKind::Tcgen05Mma => (done, SearchState::SourceFenced),
+                AsyncOpKind::Tcgen05Mma | AsyncOpKind::Tcgen05Cp => {
+                    (done, SearchState::SourceFenced)
+                }
                 _ => (done, SearchState::Unfenced),
             }
         }

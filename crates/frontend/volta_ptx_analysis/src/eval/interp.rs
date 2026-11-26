@@ -1728,6 +1728,15 @@ impl<'p> Interpreter<'p> {
             // tcgen05.commit: once this thread's async `tcgen05` ops complete,
             // arrive-on(count=1) the mbarrier (single-thread, like
             // `MbarrierArrive`); that phase then tracks its MMAs.
+            LoweredInstr::Tcgen05Cp {
+                shape,
+                taddr_base,
+                taddr_offset,
+                s_desc,
+            } => {
+                self.exec_tcgen05_cp(t, pc, *shape, (taddr_base, *taddr_offset), s_desc)?;
+            }
+
             LoweredInstr::Tcgen05Commit {
                 addr_base,
                 addr_offset,
