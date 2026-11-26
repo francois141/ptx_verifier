@@ -28,3 +28,5 @@
 /external/approximations/REPORT.md
 # The Gluon tutorials, downloaded by `external/ptx/extraction/gluon.py`
 /external/ptx/sources/gluon/
+# `external/ptx/extraction/survey.py`'s PTX and generated sources
+/external/ptx/survey/
