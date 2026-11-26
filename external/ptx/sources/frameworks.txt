@@ -1,0 +1,12 @@
+# The PTX frameworks Volta's evaluation compiles from, each at one commit.
+# `uv run external/ptx/extraction/fetch_sources.py` fetches each into target/ptx-sources/<name>.
+# name             url                                                 commit                                     version
+cutlass            https://github.com/NVIDIA/cutlass.git               5c179edeb3e2abd0dd1da18bd1aa88ee98e4f8ee   main 2026-11-25
+DeepGEMM           https://github.com/deepseek-ai/DeepGEMM.git         5081f8513af57e61696de4f4f04b0e707ffb503e   main 2026-10-20
+flash-attention    https://github.com/Dao-AILab/flash-attention.git    2676a7be000545279a692d97151eac0762df6842   main 2026-11-25
+flashinfer         https://github.com/flashinfer-ai/flashinfer.git     d0cbb476cf4041a619523c325109b4d51f2a45f1   main 2026-11-25
+FlashMLA           https://github.com/deepseek-ai/FlashMLA.git         395cb3afbb331fef7b1b21e9340861b9436b42d8   main 2026-10-27
+TensorRT-LLM       https://github.com/NVIDIA/TensorRT-LLM.git          3babde6b1b88168220fa60567403a7e2b37fb352   main 2026-11-26
+vllm               https://github.com/vllm-project/vllm.git            4fd24951cc374300b8172debd2e550863ce7115b   main 2026-11-26
+tilelang           https://github.com/tile-ai/tilelang.git             640fdcae3cd93620e5fcf98d36ee0ef7e17ae1f1   main 2026-11-26
+triton             https://github.com/triton-lang/triton.git           b7ddcf86c095de79527ba3098503e73158bb94bd   v3.9.0, as extraction/gluon.py

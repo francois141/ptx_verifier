@@ -98,6 +98,11 @@ setup:
     uv run external/ptx/extraction/tilelang_kernels.py
     uv run external/ptx/extraction/ai_compiler.py
 
+# Names (`vllm flashinfer`) fetch only those; `--no-submodules` skips their submodules.
+# Fetch the PTX frameworks of external/ptx/sources/frameworks.txt into target/ptx-sources, each at its commit
+ptx-sources *args:
+    uv run external/ptx/extraction/fetch_sources.py {{args}}
+
 # Each race recipe writes external/ptx/output/<framework>.csv; `-k NAME` and `--timeout SECONDS` narrow it.
 # Check every external PTX framework for data races
 external *args:
