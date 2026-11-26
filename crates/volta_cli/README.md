@@ -13,7 +13,7 @@ codes, and expression output).
 
 | command | does | exit |
 |---------|------|------|
-| `volta parse <file>` | syntax check | 0 / 1 |
+| `volta parse <file> [--lower]` | syntax check; `--lower` also lowers each kernel entry, one `LOWERED`/`UNSUPPORTED` line each | 0 / 1 |
 | `volta analyze <file> -k K ...` | analysis + the ten graph checks: prints the symbolic outputs, a per-instruction-kind profile (`--no-profile`), each check's verdict, any deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED \| REJECTED \| UNKNOWN` | 0 / 1 / 2 |
 | `volta compare <ref> <opt> --kernel1 .. --kernel2 .. --check-array A` | both kernels through both branches, then `decide`: `VERDICT: ACCEPT \| REJECT \| UNKNOWN` | 0 / 1 / 2 |
 | `volta verify <file> <spec> -k K --dim N=..` | one kernel against a `.spec` (file or inline string), through both branches and `decide` | 0 / 1 / 2 |

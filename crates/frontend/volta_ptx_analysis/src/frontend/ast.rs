@@ -658,6 +658,12 @@ pub struct PerformanceDirectives {
     pub min_ncta_per_sm: Option<u32>,
     /// Maximum CTAs per SM (.maxnctapersm) - deprecated
     pub max_ncta_per_sm: Option<u32>,
+    /// Required CTAs per cluster (.reqnctapercluster nx, ny, nz)
+    pub req_ncta_per_cluster: Option<(u32, Option<u32>, Option<u32>)>,
+    /// Maximum CTAs per cluster (.maxclusterrank)
+    pub max_cluster_rank: Option<u32>,
+    /// The kernel must be launched with cluster dimensions (.explicitcluster)
+    pub explicit_cluster: bool,
     /// Function does not return (.noreturn)
     pub noreturn: bool,
     /// Pragma strings

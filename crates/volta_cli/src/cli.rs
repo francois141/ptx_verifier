@@ -64,6 +64,11 @@ pub(crate) enum Commands {
     Parse {
         /// PTX file to parse
         file: PathBuf,
+
+        /// Also lower every kernel entry, printing `LOWERED <kernel>` or
+        /// `UNSUPPORTED <kernel>: <error>` per entry (exit 1 if any does not lower)
+        #[arg(long)]
+        lower: bool,
     },
 
     /// Symbolically execute a kernel: detect races/deadlocks and print the

@@ -97,6 +97,10 @@ Features Volta does not model (`wgmma`, `activemask`, `mbarrier.inval`, ...)
 are rejected as `LowerError`s. An immediate `mbarrier.init` or `mbarrier.arrive`
 count outside `[1, 2^20 - 1]` is an invalid operand; a register count outside it
 aborts the run with `EvalError::MbarrierCountOutOfRange`.
+Every cluster holds one CTA: `.maxclusterrank` allows it, a `.reqnctapercluster` of several
+CTAs is a `LowerError`, and `.explicitcluster` (or `.reqnctapercluster`) makes the program's
+`ClusterLaunch` explicit, which `%is_explicit_cluster` reads. `lower_entries` lowers every
+kernel entry of a module without running it (`volta parse --lower`).
 
 ### 2. Evaluation (`eval/`)
 
@@ -170,7 +174,7 @@ label; unknown keys are errors. The module docs give the full format.
 
 ## Module layout
 
-Every module but `frontend` is private. `lib.rs` re-exports the public API (`analyze`,
+Every module but `frontend` is private. `lib.rs` re-exports the public API (`analyze`, `lower_entries`,
 `AnalysisResult`, `AnalysisConfig`, `EvalError`, `LowerError`, `Stats`,
 `write_op_counts`, ...), so dead code is flagged by rustc. Logging (barrier
 fires, deadlocks, launch stats) is behind the `logging` feature.

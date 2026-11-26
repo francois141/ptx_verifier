@@ -26,7 +26,9 @@ use id_collections::{Id, IdVec};
 
 use crate::ir::symbols::ParamLayout;
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BarrierAlignment, BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
+use crate::ir::{
+    BarrierAlignment, BinOp, ClusterLaunch, InstrId, LoweredInstr, LoweredProgram, Predicate,
+};
 
 use arith::{
     lower_abs, lower_add, lower_bfe, lower_bfi, lower_copysign, lower_cvt, lower_div, lower_ex2,
@@ -72,6 +74,7 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
         name: func.name.to_string(),
     })?;
 
+    let cluster = cluster_launch(func)?;
     let mut ctx = LoweringContext::new();
 
     // First: collect module-level declarations (e.g., extern shared memory)
@@ -99,6 +102,28 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
         symbols: ctx.symbols,
         source_map: ctx.source_map,
         entry_pc: InstrId::from_index(0),
+        cluster,
+    })
+}
+
+/// The cluster the kernel's directives launch it in. Volta models one CTA per cluster, which
+/// any `.maxclusterrank` allows, so only a `.reqnctapercluster` of several CTAs is rejected.
+fn cluster_launch(func: &Function) -> LowerResult<ClusterLaunch> {
+    let directives = &func.perf_directives;
+    if let Some((x, y, z)) = directives.req_ncta_per_cluster {
+        let ctas = x * y.unwrap_or(1) * z.unwrap_or(1);
+        if ctas != 1 {
+            return Err(unsupported(
+                ".reqnctapercluster",
+                format!("a cluster of {ctas} CTAs (Volta models one CTA per cluster)"),
+            ));
+        }
+    }
+    let explicit = directives.explicit_cluster || directives.req_ncta_per_cluster.is_some();
+    Ok(if explicit {
+        ClusterLaunch::Explicit
+    } else {
+        ClusterLaunch::Implicit
     })
 }
 

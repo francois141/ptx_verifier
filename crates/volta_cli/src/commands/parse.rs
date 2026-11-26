@@ -8,9 +8,10 @@ use volta_common::report::{Report, locate_path, report_error};
 use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
 use volta_ptx_analysis::frontend::ast::{Module, TopLevelItem};
 use volta_ptx_analysis::frontend::parse;
+use volta_ptx_analysis::lower_entries;
 
 /// Parse a PTX file and report any errors
-pub(crate) fn cmd_parse(file: &Path) -> ExitCode {
+pub(crate) fn cmd_parse(file: &Path, lower: bool) -> ExitCode {
     let mut files = FileCache::new();
 
     let contents = match files.read(file) {
@@ -34,7 +35,11 @@ pub(crate) fn cmd_parse(file: &Path) -> ExitCode {
         Ok(module) => {
             println!("Parsed successfully: {}", file.display());
             print_module_summary(&module);
-            ExitCode::SUCCESS
+            if lower {
+                print_lowering(&module)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => {
             let _ = report_error(
@@ -68,5 +73,29 @@ fn print_module_summary(module: &Module) {
     println!("  Entries (kernels): {}", entries);
     if functions > 0 {
         println!("  Functions: {}", functions);
+    }
+}
+
+/// One line per kernel entry: whether it lowers, else its first lowering error on one line.
+fn print_lowering(module: &Module) -> ExitCode {
+    let mut all_lowered = true;
+    for (kernel, lowered) in lower_entries(module) {
+        match lowered {
+            Ok(()) => println!("LOWERED {kernel}"),
+            Err(e) => {
+                all_lowered = false;
+                let message = e
+                    .to_string()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!("UNSUPPORTED {kernel}: {message}");
+            }
+        }
+    }
+    if all_lowered {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }

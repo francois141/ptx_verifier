@@ -1145,6 +1145,18 @@ impl<'a> Parser<'a> {
                     self.next().unwrap();
                     directives.max_ncta_per_sm = Some(self.parse_int_literal()? as u32);
                 }
+                b"reqnctapercluster" => {
+                    self.next().unwrap();
+                    directives.req_ncta_per_cluster = Some(self.parse_ntid_args()?);
+                }
+                b"maxclusterrank" => {
+                    self.next().unwrap();
+                    directives.max_cluster_rank = Some(self.parse_int_literal()? as u32);
+                }
+                b"explicitcluster" => {
+                    self.next().unwrap();
+                    directives.explicit_cluster = true;
+                }
                 b"noreturn" => {
                     self.next().unwrap();
                     directives.noreturn = true;

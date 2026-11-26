@@ -11,7 +11,9 @@ mod ir;
 mod launch_file;
 mod lower;
 
-pub use analysis::{AnalysisError, AnalysisParts, AnalysisResult, analyze, write_op_counts};
+pub use analysis::{
+    AnalysisError, AnalysisParts, AnalysisResult, analyze, lower_entries, write_op_counts,
+};
 pub use config::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
     TensorMapMode, TensorMapValue,

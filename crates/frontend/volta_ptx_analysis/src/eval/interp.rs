@@ -28,8 +28,9 @@ use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, Specia
 use crate::ir::tcgen05::Tcgen05FenceDirection;
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
-    BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
-    MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
+    BarrierAlignment, BinOp, Clamp, ClusterLaunch, CpAsyncSrcSize, InstrId, LoweredInstr,
+    LoweredProgram, MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand,
+    TensormapFence,
 };
 use volta_common::logging::{info, warn};
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, PrmtSelector, StringId, Type, Width};
@@ -2371,8 +2372,10 @@ impl<'p> Interpreter<'p> {
             SpecialRegKind::NclusteridX => self.config.grid_dim.0 as i64,
             SpecialRegKind::NclusteridY => self.config.grid_dim.1 as i64,
             SpecialRegKind::NclusteridZ => self.config.grid_dim.2 as i64,
-            // A launch without cluster dimensions runs in implicit 1x1x1 clusters.
-            SpecialRegKind::IsExplicitCluster => return Ok(self.arena.bool_val(false)),
+            SpecialRegKind::IsExplicitCluster => {
+                let explicit = self.program.cluster == ClusterLaunch::Explicit;
+                return Ok(self.arena.bool_val(explicit));
+            }
             SpecialRegKind::LaneId => (t.0 % WARP_SIZE) as i64,
             SpecialRegKind::DynamicSmemSize => self.config.dynamic_shared_bytes as i64,
             // `%warpid` and `%smid` name the current hardware location, which may change during

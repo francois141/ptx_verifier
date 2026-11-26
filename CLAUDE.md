@@ -297,7 +297,7 @@ crate-level docs in `lib.rs` are the contract.
 **Path**: `crates/frontend/volta_ptx_analysis/`
 
 Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
-`AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
+`AnalysisResult`, `AnalysisParts`, `AnalysisError`, `lower_entries`, `write_op_counts`, the
 `AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
 `Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
 reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
@@ -383,7 +383,9 @@ instruction family, each file depending only on `context` and `error`:
 The cluster registers are hardcoded for one CTA per cluster: `%cluster_ctaid`/
 `%cluster_ctarank` are 0, `%cluster_nctaid`/`%cluster_nctarank` are 1, and
 `%clusterid`/`%nclusterid` equal `%ctaid`/`%nctaid`, and `%is_explicit_cluster` is
-false (an implicit 1x1x1 cluster).
+true only for a kernel declaring `.explicitcluster` or `.reqnctapercluster`
+(`LoweredProgram::cluster`, a `ClusterLaunch`). `.maxclusterrank` is an upper
+bound one CTA meets; a `.reqnctapercluster` of several CTAs is a lowering error.
 
 ### Evaluator (`eval/`)
 
@@ -1388,7 +1390,7 @@ or steps through one event kind, and keyboard navigation (`?` lists the keys).
 
 Commands:
 
-- `volta parse <file>` - Check syntax
+- `volta parse <file>` - Check syntax; `--lower` also lowers every kernel entry (`lower_entries`), one `LOWERED`/`UNSUPPORTED <kernel>: <error>` line each (exit 1 if any fails), which `external/ptx/extraction/survey.py` counts
 - `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph; `--config FILE` (any command taking launch flags) replaces the launch flags with a JSON launch file, whose `"kernel"` is the default `--kernel`
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened

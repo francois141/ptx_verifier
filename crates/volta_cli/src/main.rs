@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         .init();
 
     let code = match cli.command {
-        Commands::Parse { file } => cmd_parse(&file),
+        Commands::Parse { file, lower } => cmd_parse(&file, lower),
         Commands::Analyze(args) => cmd_analyze(args, &mut log),
         Commands::Compare(args) => cmd_compare(args, &mut log),
         Commands::Verify(args) => cmd_verify(args, &mut log),

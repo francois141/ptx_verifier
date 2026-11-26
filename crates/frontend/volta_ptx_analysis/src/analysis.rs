@@ -154,6 +154,21 @@ pub fn module_vars(module: &Module) -> Vec<VarDecl> {
         .collect()
 }
 
+/// Each kernel entry of `module`, in source order, with whether it lowers.
+pub fn lower_entries(module: &Module) -> Vec<(String, Result<(), LowerError>)> {
+    let vars = module_vars(module);
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevelItem::Entry(f) => {
+                Some((f.name.to_string(), lower_function(f, &vars).map(drop)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Lower one kernel and run one candidate execution of CTA (0,0,0) under `config`.
 pub fn analyze(
     module: &Module,

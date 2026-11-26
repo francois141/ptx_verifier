@@ -1104,6 +1104,16 @@ pub struct LoweredProgram {
 
     /// Entry point PC (usually 0)
     pub entry_pc: InstrId,
+
+    /// Whether the kernel runs in an explicit cluster (`.explicitcluster`), always of one CTA
+    pub cluster: ClusterLaunch,
+}
+
+/// How the kernel's one-CTA cluster is launched, which `%is_explicit_cluster` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterLaunch {
+    Implicit,
+    Explicit,
 }
 
 impl LoweredProgram {

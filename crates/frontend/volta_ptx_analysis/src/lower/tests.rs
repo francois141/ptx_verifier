@@ -5,7 +5,9 @@ use id_collections::Id;
 use crate::ir::symbols::SpecialRegKind;
 use crate::ir::tcgen05::Tcgen05LdStShape;
 use crate::ir::tensor_map::TensorLoadMode;
-use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
+use crate::ir::{
+    Clamp, ClusterLaunch, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand,
+};
 
 use super::context::LoweringContext;
 use super::error::{LowerError, LowerResult, MbarrierWaitKind};
@@ -344,6 +346,11 @@ fn test_hint_for_size_mismatch() {
 /// Parse `src` as a full module and lower its entry, passing module-level
 /// variable declarations through as the driver does.
 fn lower_module_src(src: &str) -> LoweredProgram {
+    lower_module_result(src).expect("lowering failed")
+}
+
+/// [`lower_module_src`], keeping the lowering error.
+fn lower_module_result(src: &str) -> LowerResult<LoweredProgram> {
     use crate::frontend::ascii::AsAscii;
     use crate::frontend::parse::Parser;
 
@@ -367,7 +374,48 @@ fn lower_module_src(src: &str) -> LoweredProgram {
             _ => None,
         })
         .expect("kernel not found");
-    lower_function(func, &vars).expect("lowering failed")
+    lower_function(func, &vars)
+}
+
+// =========================================================================
+// Cluster directives: one CTA per cluster, explicit or implicit.
+// =========================================================================
+
+fn cluster_kernel(directives: &str) -> String {
+    format!(
+        ".version 8.7\n.target sm_100a\n.address_size 64\n.visible .entry k() {directives}\n{{\n ret;\n}}\n"
+    )
+}
+
+#[test]
+fn test_cluster_directives_default_to_implicit() {
+    let program = lower_module_src(&cluster_kernel(".maxntid 128, 1, 1"));
+    assert_eq!(program.cluster, ClusterLaunch::Implicit);
+}
+
+#[test]
+fn test_maxclusterrank_allows_one_cta_cluster() {
+    let program = lower_module_src(&cluster_kernel(".maxntid 384, 1, 1\n.maxclusterrank 2"));
+    assert_eq!(program.cluster, ClusterLaunch::Implicit);
+}
+
+#[test]
+fn test_explicitcluster_and_single_cta_reqnctapercluster_are_explicit() {
+    let explicit = lower_module_src(&cluster_kernel(".explicitcluster"));
+    assert_eq!(explicit.cluster, ClusterLaunch::Explicit);
+    let required = lower_module_src(&cluster_kernel(
+        ".explicitcluster\n.reqnctapercluster 1, 1, 1",
+    ));
+    assert_eq!(required.cluster, ClusterLaunch::Explicit);
+}
+
+#[test]
+fn test_reqnctapercluster_of_several_ctas_is_unsupported() {
+    let err = lower_module_result(&cluster_kernel(
+        ".explicitcluster\n.reqnctapercluster 2, 1, 1",
+    ))
+    .expect_err("a 2-CTA cluster must not lower");
+    assert!(err.to_string().contains("a cluster of 2 CTAs"), "{err}");
 }
 
 #[test]
