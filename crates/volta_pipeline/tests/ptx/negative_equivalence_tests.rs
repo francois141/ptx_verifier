@@ -564,9 +564,17 @@ fn meta_no_negative_pair_is_proved_equivalent() {
 
 /// `kernel`'s single output against the spec `out[i] = exp(in[i])`, rewrites applied.
 fn against_exp_spec(name: &str, kernel: &Kernel) -> volta_pipeline::EquivalenceVerdict {
+    against_spec(
+        name,
+        kernel,
+        "dim N; array in[N]; array out[N]; out[i] = exp(in[i]);",
+    )
+}
+
+/// `kernel`'s single output against `spec` over one element, rewrites applied.
+fn against_spec(name: &str, kernel: &Kernel, spec: &str) -> volta_pipeline::EquivalenceVerdict {
     let actual = run(name, kernel);
     let dims = std::collections::HashMap::from([("N".to_string(), 1)]);
-    let spec = "dim N; array in[N]; array out[N]; out[i] = exp(in[i]);";
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
         .lower()
@@ -611,5 +619,22 @@ fn test_cuda_expf_without_split_low_half_is_not_exp() {
             volta_pipeline::EquivalenceVerdict::Equivalent { .. }
         ),
         "SOUNDNESS BUG: a 1e-8-off exponential was proved exp: {verdict:?}"
+    );
+}
+
+/// `expf(2 x)`: the rewrite recovers the argument's constant exactly, `exp(2 x)`.
+#[test]
+fn test_cuda_accurate_expf_of_a_scaled_argument() {
+    let kernel = Kernel {
+        ptx: ptx!(parse "negative_equivalence/cuda_accurate_expf_of_a_scaled_argument"),
+        config: f32_config(1, 1, 1),
+    };
+    let spec = "dim N; array in[N]; array out[N]; out[i] = exp(2 * in[i]);";
+    assert_eq!(
+        against_spec("cuda_accurate_expf_of_a_scaled_argument", &kernel, spec),
+        volta_pipeline::EquivalenceVerdict::Equivalent {
+            checked: 1,
+            total: 1
+        }
     );
 }

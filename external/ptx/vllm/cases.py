@@ -636,15 +636,9 @@ CASES += (
                       note=" (token past prefill_tokens_with_context)"),
     merge_attn_states("merge_attn_states_mla_512_copy", 2, 16, 512, cta=9, prefix_tokens=1,
                       lse=False, note=" (MLA kv_lora_rank head, token past the context)"),
-    # Volta gap: the merge path's expf(p - max(p, s)) (:154, the accurate expf at PTX
-    # :2038-2058) is neither proved equal to exp nor refuted, though the same expf sequence
-    # on -x proves in silu_and_mul; the kernel computes the spec's expression exactly.
-    merge_attn_states("merge_attn_states_bf16_128", 4, 32, 128, cta=5, lse=False,
-                      check="UNKNOWN"),
-    merge_attn_states("merge_attn_states_f16_128", 4, 32, 128, cta=6, dtype="f16", lse=False,
-                      check="UNKNOWN"),
-    merge_attn_states("merge_attn_states_f32_128", 2, 16, 128, cta=3, dtype="f32", lse=False,
-                      check="UNKNOWN"),
+    merge_attn_states("merge_attn_states_bf16_128", 4, 32, 128, cta=5, lse=False),
+    merge_attn_states("merge_attn_states_f16_128", 4, 32, 128, cta=6, dtype="f16", lse=False),
+    merge_attn_states("merge_attn_states_f32_128", 2, 16, 128, cta=3, dtype="f32", lse=False),
     # Volta gap: out_lse = logf(out_se) + max_lse (:189) carries logf's special cases
     # (logf(0) = -inf), and the solver refuses the non-finite constant.
     merge_attn_states("merge_attn_states_lse_bf16_128", 4, 32, 128, cta=5, check="UNKNOWN"),
@@ -989,10 +983,8 @@ def swigluoai_and_mul(name, d, tokens, cta, check="ACCEPT", note=""):
 
 
 CASES += (
-    # Volta gap: expf(-1.702f * x) (:1389) stays unproved (numerically equal, not refuted);
-    # the same accurate-expf sequence on a bare -x proves in silu_and_mul.
-    activation("gelu_quick_4096", "gelu_quick", 4096, check="UNKNOWN"),
-    activation("gelu_quick_scalar_100", "gelu_quick", 100, check="UNKNOWN"),
+    activation("gelu_quick_4096", "gelu_quick", 4096),
+    activation("gelu_quick_scalar_100", "gelu_quick", 100),
     activation("relu_squared_4096", "relu_squared", 4096),
     activation("gelu_new_4096", "gelu_new", 4096, spec=False),
     activation("gelu_fast_4096", "gelu_fast", 4096, spec=False),
@@ -1000,9 +992,8 @@ CASES += (
     gelu_and_mul("gelu_tanh_and_mul_4096", 4096, tanh=True),
     gelu_and_mul("gelu_and_mul_256b_4096", 4096, tokens=129, note=" (token 0 of 129)"),
     gelu_and_mul("gelu_tanh_and_mul_scalar_100", 100, tanh=True),
-    # Volta gap as gelu_quick: expf(-g * alpha) (:415) neither proved nor refuted.
-    swigluoai_and_mul("swigluoai_and_mul_gpt_oss_2880", 2880, 2, cta=1, check="UNKNOWN"),
-    swigluoai_and_mul("swigluoai_and_mul_odd_1001", 1001, 2, cta=1, check="UNKNOWN",
+    swigluoai_and_mul("swigluoai_and_mul_gpt_oss_2880", 2880, 2, cta=1),
+    swigluoai_and_mul("swigluoai_and_mul_odd_1001", 1001, 2, cta=1,
                       note=" (rows 2 x 1001 x 2 bytes apart: token 1 unaligned, scalar loop)"),
 )
 

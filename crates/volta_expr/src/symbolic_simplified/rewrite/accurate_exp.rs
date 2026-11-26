@@ -1,35 +1,51 @@
-//! CUDA's accurate `expf` (libdevice's, without fast math), `ex2(x * (H + L) - n) * 2^n`, into
-//! `exp(x)`. Lowering spells `ex2(e)` as `exp(e / f32(log2 e))` and the exponent-bits scale `2^n`
-//! as `exp(n * log 2)`; read as powers of two, their exponents add exactly, the clamped `n`
-//! cancels, and the split `H + L` of `log2(e)` times ln 2 is 1 within 1e-15.
+//! CUDA's accurate `expf` (libdevice's, without fast math), `ex2(u * H + u * L - n) * 2^n`, into
+//! `exp(u)`. Lowering spells `ex2(e)` as `exp(e / f32(log2 e))` and the exponent-bits scale `2^n`
+//! as `exp(n * log 2)`; read as powers of two, their exponents add exactly (exact rationals), the
+//! clamped `n` cancels, and every remaining coefficient is `q * (H + L)` for the argument's own
+//! constant `q`: `2^(q (H + L) y) = exp(q y)` since `(H + L) ln 2` is 1 within 1e-16.
 
 use rug::Rational;
 
+use super::node::scaled_node;
 use super::patterns::Matcher;
 use crate::{ExprArena, ExprId, ExprNode};
 
-/// How far `(H + L) * ln 2` may sit from 1 (and the cancelled terms from 0): the split is exact
-/// to about 1e-15, while a single f32 rounding of `log2(e)` (1e-8 off) stays unmatched.
-const TOLERANCE: f64 = 1e-9;
+/// `H + L`, libdevice's split of `log2(e)`: `f32(log2 e)` and the f32 rounding of the rest.
+fn log2e_split() -> Rational {
+    Rational::from((12102203, 8388608)) + Rational::from((338819, 17592186044416u64))
+}
 
-/// `exp(sign * y)`.
+/// The largest denominator a recovered coefficient `q` may have: the argument's own constants
+/// (`-1`, `1.702`) are short, while a coefficient with only `H` (an f32-rounded `log2(e)`, 1e-8
+/// off) divides into a ~2^70 denominator and stays unmatched.
+const MAX_DENOMINATOR_BITS: u32 = 64;
+
+/// `exp(sum q_i y_i)`.
 pub(super) struct AccurateExp {
-    y: ExprId,
-    negated: bool,
+    terms: Vec<(ExprId, Rational)>,
 }
 
 impl AccurateExp {
     pub(super) fn build(self, arena: &mut ExprArena) -> ExprId {
-        let argument = if self.negated {
-            arena.neg(self.y)
-        } else {
-            self.y
-        };
+        let mut argument: Option<ExprId> = None;
+        for (y, q) in &self.terms {
+            let term = if *q == -1 {
+                arena.neg(*y)
+            } else {
+                scaled_node(arena, q, *y)
+            };
+            argument = Some(match argument {
+                Some(sum) => arena.add(sum, term),
+                None => term,
+            });
+        }
+        let argument = argument.expect("an accurate exp has a non-constant argument");
         arena.exp(argument)
     }
 }
 
-/// `id` as `2^a * 2^b` whose exponents sum to `±y * log2(e)` once every other term cancels.
+/// `id` as `2^a * 2^b` whose exponents sum to `sum q_i (H + L) y_i` exactly once the clamped
+/// exponent cancels.
 pub(super) fn accurate_exp(arena: &ExprArena, id: ExprId) -> Option<AccurateExp> {
     let m = Matcher::new(arena);
     let ExprNode::Mul(left, right) = *m.node(id) else {
@@ -40,24 +56,25 @@ pub(super) fn accurate_exp(arena: &ExprArena, id: ExprId) -> Option<AccurateExp>
     };
 
     let mut form = Linear::default();
-    form.add(m, power_of_two(m, a)?, 1.0)?;
-    form.add(m, power_of_two(m, b)?, 1.0)?;
+    form.add(m, power_of_two(m, a)?, &Rational::from(1))?;
+    form.add(m, power_of_two(m, b)?, &Rational::from(1))?;
 
-    if form.constant.abs() > TOLERANCE {
+    if form.constant != 0 {
         return None;
     }
-    let mut significant = form.terms.iter().filter(|(_, c)| c.abs() > TOLERANCE);
-    let (y, c) = *significant.next()?;
-    if significant.next().is_some() {
-        return None;
+    let split = log2e_split();
+    let mut terms = Vec::new();
+    for (y, c) in form.terms {
+        if c == 0 {
+            continue;
+        }
+        let q = c / &split;
+        if q.denom().significant_bits() > MAX_DENOMINATOR_BITS {
+            return None;
+        }
+        terms.push((y, q));
     }
-    let natural = c * std::f64::consts::LN_2;
-    let negated = match natural {
-        c if (c - 1.0).abs() <= TOLERANCE => false,
-        c if (c + 1.0).abs() <= TOLERANCE => true,
-        _ => return None,
-    };
-    Some(AccurateExp { y, negated })
+    (!terms.is_empty()).then_some(AccurateExp { terms })
 }
 
 /// `e` of an exponential argument `e * s` that is `2^e`: `s` is lowering's `ex2` scale
@@ -73,18 +90,19 @@ fn power_of_two(m: Matcher, argument: ExprId) -> Option<ExprId> {
     })
 }
 
-/// A sum of `coefficient * term` plus a constant, terms merged by structural equality.
+/// A sum of `coefficient * term` plus a constant, in exact rationals, terms merged by
+/// structural equality.
 #[derive(Default)]
 struct Linear {
-    terms: Vec<(ExprId, f64)>,
-    constant: f64,
+    terms: Vec<(ExprId, Rational)>,
+    constant: Rational,
 }
 
 impl Linear {
     /// Add `scale * id`; `None` when a product of two non-constants appears.
-    fn add(&mut self, m: Matcher, id: ExprId, scale: f64) -> Option<()> {
-        if let Some(k) = constant(m, id) {
-            self.constant += scale * k;
+    fn add(&mut self, m: Matcher, id: ExprId, scale: &Rational) -> Option<()> {
+        if let Some(k) = m.constant(id) {
+            self.constant += Rational::from(scale * k);
             return Some(());
         }
         match *m.node(id) {
@@ -94,12 +112,12 @@ impl Linear {
             }
             ExprNode::Sub(a, b) => {
                 self.add(m, a, scale)?;
-                self.add(m, b, -scale)
+                self.add(m, b, &Rational::from(-scale))
             }
-            ExprNode::Neg(a) => self.add(m, a, -scale),
-            ExprNode::Mul(a, b) => match (constant(m, a), constant(m, b)) {
-                (Some(k), _) => self.add(m, b, scale * k),
-                (_, Some(k)) => self.add(m, a, scale * k),
+            ExprNode::Neg(a) => self.add(m, a, &Rational::from(-scale)),
+            ExprNode::Mul(a, b) => match (m.constant(a), m.constant(b)) {
+                (Some(k), _) => self.add(m, b, &Rational::from(scale * k)),
+                (_, Some(k)) => self.add(m, a, &Rational::from(scale * k)),
                 (None, None) => None,
             },
             _ => {
@@ -109,26 +127,10 @@ impl Linear {
         }
     }
 
-    fn term(&mut self, m: Matcher, id: ExprId, scale: f64) {
+    fn term(&mut self, m: Matcher, id: ExprId, scale: &Rational) {
         match self.terms.iter_mut().find(|(t, _)| m.same(*t, id)) {
             Some((_, c)) => *c += scale,
-            None => self.terms.push((id, scale)),
+            None => self.terms.push((id, scale.clone())),
         }
-    }
-}
-
-/// `id`'s value when it is a constant: a number, or `log` of a positive one (Volta's `2^n`).
-fn constant(m: Matcher, id: ExprId) -> Option<f64> {
-    if let Some(q) = m.constant(id) {
-        return Some(q.to_f64());
-    }
-    match *m.node(id) {
-        ExprNode::Log(a) => m
-            .constant(a)
-            .filter(|q| *q > Rational::new())
-            .map(|q| q.to_f64().ln()),
-        ExprNode::Mul(a, b) => Some(constant(m, a)? * constant(m, b)?),
-        ExprNode::Neg(a) => constant(m, a).map(|k| -k),
-        _ => None,
     }
 }
