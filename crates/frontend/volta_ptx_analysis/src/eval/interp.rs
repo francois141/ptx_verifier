@@ -2598,7 +2598,7 @@ impl<'p> Interpreter<'p> {
         // Collect missing elements first, since the array list borrows the
         // config: (addr, width, index, array name interned once, or None for
         // identity indices).
-        let mut missing: Vec<(u64, u64, u64, Option<StringId>)> = Vec::new();
+        let mut missing: Vec<(u64, u64, u64, Element)> = Vec::new();
         for array in &self.config.arrays {
             if !array.kind.is_input() {
                 continue;
@@ -2622,12 +2622,25 @@ impl<'p> Interpreter<'p> {
             let first = (addr.max(array.base) - array.base) / array.elem_width;
             let last = ((addr + width - 1).min(end - 1) - array.base) / array.elem_width;
             let mut array_sid: Option<StringId> = None;
+            // A 4-byte index array's `contents` give its elements; without them element i is i.
+            let contents = (array.kind == crate::config::ArrayKind::IndexInput
+                && array.elem_width == 4)
+                .then(|| {
+                    self.config
+                        .array_contents
+                        .iter()
+                        .find(|(name, _)| *name == array.name)
+                })
+                .flatten();
             for i in first..=last {
                 let elem_addr = array.base + i * array.elem_width;
                 if !self.global.has_cell_at(elem_addr) {
-                    let value = match array.kind {
-                        crate::config::ArrayKind::IndexInput => None,
-                        _ => Some(
+                    let value = match (array.kind, contents) {
+                        (crate::config::ArrayKind::IndexInput, Some((_, words))) => {
+                            Element::Given(words.get(i as usize).copied().unwrap_or(0) as i64)
+                        }
+                        (crate::config::ArrayKind::IndexInput, None) => Element::Given(i as i64),
+                        _ => Element::Symbol(
                             *array_sid.get_or_insert_with(|| self.arena.intern_string(&array.name)),
                         ),
                     };
@@ -2640,11 +2653,10 @@ impl<'p> Interpreter<'p> {
         // granules are naturally aligned because `validate` requires bases to
         // be multiples of the element width.
         let mut any = false;
-        for (elem_addr, elem_width, index, array_sid) in missing {
-            let value = match array_sid {
-                Some(sid) => self.arena.input_element(sid, index),
-                // Identity index array: element i holds the value i.
-                None => self.arena.int(index as i64),
+        for (elem_addr, elem_width, index, element) in missing {
+            let value = match element {
+                Element::Symbol(sid) => self.arena.input_element(sid, index),
+                Element::Given(v) => self.arena.int(v),
             };
             if self
                 .global
@@ -2768,4 +2780,12 @@ fn operand_reg_bits(op: &Operand) -> Option<u32> {
         Operand::Reg(r) => Some(reg_bits(*r)),
         _ => None,
     }
+}
+
+/// What an input array's never-read element materializes as: a symbol, or a given integer
+/// (an index array's element: its `contents`, else its own index).
+#[derive(Clone, Copy)]
+enum Element {
+    Symbol(StringId),
+    Given(i64),
 }

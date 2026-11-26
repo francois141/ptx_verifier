@@ -295,9 +295,9 @@ fn load_store_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, F
 }
 
 /// Whether the PTX ISA pipelines `a`'s operation before `b`'s on these effects once both are
-/// issued by one warp (9.7.18.6.2): the accumulator effects of two MMAs on one accumulator, a
-/// copy's writes and an MMA's operand reads, or the data effects of a `st` -> `ld`, `st` ->
-/// `st` or `ld` -> `st` pair. The fence protocol
+/// issued by one warp (9.7.18.6.2): the accumulator effects of two MMAs on one accumulator, or
+/// the data effects of a `st` -> `ld`, `st` -> `st` or `ld` -> `st` pair; or, issued by any
+/// two threads, a copy's writes and an MMA's operand reads. The fence protocol
 /// orders such a pair across the warp's threads (9.7.18.6.4.3); any other pair needs the
 /// earlier operation's completion (9.7.18.6.4.4).
 pub fn pipelinable(graph: &EventGraph, a: EventId, b: EventId) -> bool {
@@ -308,8 +308,10 @@ pub fn pipelinable(graph: &EventGraph, a: EventId, b: EventId) -> bool {
         let d = accumulator(graph, x);
         return warp(x) == warp(y) && !d.is_empty() && d == accumulator(graph, y);
     }
-    if let (Some((x, _)), Some((y, _, _))) = (copy_effect(graph, a), mma_operand_read(graph, b)) {
-        return warp(x) == warp(y);
+    // The ISA's "pipelined instructions, different thread" pattern (9.7.16.6.4.3) is a copy
+    // and an MMA of any two threads, ordered by the fence protocol between their issues.
+    if copy_effect(graph, a).is_some() && mma_operand_read(graph, b).is_some() {
+        return true;
     }
     match (load_store_effect(graph, a), load_store_effect(graph, b)) {
         (Some((x, _)), Some((y, _))) => {

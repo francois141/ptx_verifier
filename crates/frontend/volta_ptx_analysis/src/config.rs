@@ -168,7 +168,8 @@ pub struct AnalysisConfig {
     pub dynamic_shared_bytes: u64,
     /// Abort analysis after this many executed instructions
     pub max_instructions: u64,
-    /// Concrete 32-bit words of input arrays, by name; only the AMD frontend reads them
+    /// Concrete 32-bit words of input arrays, by name: the AMD frontend reads them, and the PTX
+    /// frontend those of 4-byte index arrays
     pub array_contents: Vec<(String, Vec<u32>)>,
 }
 

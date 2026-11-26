@@ -161,9 +161,9 @@ fn array_contents(raw_arrays: &[RawArray]) -> Result<Vec<(String, Vec<u32>)>, St
         .iter()
         .filter_map(|raw| raw.contents.as_ref().map(|contents| (raw, contents)))
         .map(|(raw, contents)| {
-            if !matches!(raw.kind, RawKind::In) {
+            if !matches!(raw.kind, RawKind::In | RawKind::Index) {
                 return Err(format!(
-                    "array '{}': only an `in` array has `contents`",
+                    "array '{}': only an `in` or `index` array has `contents`",
                     raw.name
                 ));
             }

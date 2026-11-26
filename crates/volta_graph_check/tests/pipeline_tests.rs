@@ -271,3 +271,18 @@ fn a_copy_after_an_mma_or_by_another_thread_is_not_pipelined() {
         "another issuer"
     );
 }
+
+#[test]
+fn a_copy_and_an_mma_of_two_warps_are_pipelinable() {
+    let mut s = Scenario::new(64);
+    let (write, mma) = copy_and_scaled_mma(&mut s, 0, 32, true);
+    let (g, _) = s.completed(64);
+    assert!(
+        volta_graph_check::pipeline::pipelinable(&g, write, mma[0]),
+        "the ISA's pipelined pattern across threads (9.7.16.6.4.3)"
+    );
+    assert!(
+        pipeline_edges(&g).edge(&g, write, mma[0]).is_none(),
+        "no edge without the fences"
+    );
+}

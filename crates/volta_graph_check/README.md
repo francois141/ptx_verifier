@@ -125,7 +125,8 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
 - `pipeline.rs`: `E_pipeline`, the pairs the PTX ISA (9.7.18.6.2) pipelines
   without explicit sync. These are same-thread `tcgen05.mma` chains on one
   accumulator, a same-thread `tcgen05.cp` then `tcgen05.mma` on the cells the copy
-  writes and the MMA reads as an operand (`scale_A`/`scale_B`/`[a-tmem]`), and
+  writes and the MMA reads as an operand (`scale_A`/`scale_B`/`[a-tmem]`; a pair of any two
+  threads is `pipelinable`, the ISA's pipelined pattern across threads, 9.7.16.6.4.3), and
   same-warp `st->ld`, `st->st`, `ld->st` pairs separated by the earlier op's own
   `tcgen05.wait`. Each edge keeps its rule, roles and
   covered cells. `pipelinable` is the same pairing without the one-thread and
