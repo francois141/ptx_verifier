@@ -65,6 +65,11 @@ def param(arg) -> dict:
     raise TypeError(f"unknown argument {arg!r}")
 
 
+def array(a) -> dict:
+    placed = {"base": hex(a.base)} if getattr(a, "base", None) is not None else {}
+    return {"name": a.name, "kind": a.kind, "dtype": a.dtype, "shape": list(a.shape), **placed}
+
+
 def launch_file(framework: str, case, kernel: str) -> dict:
     launch = {
         "description": f"{framework} {case.source}: {case.description}. "
@@ -72,8 +77,8 @@ def launch_file(framework: str, case, kernel: str) -> dict:
         "kernel": kernel,
         "grid": list(case.grid),
         "block": case.block,
-        "arrays": [{"name": a.name, "kind": a.kind, "dtype": a.dtype, "shape": list(a.shape)}
-                   for a in case.arrays],
+        **({"cta": list(case.cta)} if any(case.cta) else {}),
+        "arrays": [array(a) for a in case.arrays],
         "params": [param(a) for a in case.args],
     }
     if case.spec:
@@ -90,6 +95,8 @@ def verdict_of(output: str, has_spec: bool) -> str:
     if match := VERDICT.search(output):
         if has_spec:
             return match.group(1)
+    elif has_spec and "graph verification" not in output:
+        return "ERROR"
     if "error:" in output and "VERDICT" not in output:
         return "ABORT"
     if "every graph check passed" in output:
@@ -126,7 +133,8 @@ def detail_of(output: str) -> str:
     """The first line explaining a verdict other than ACCEPT."""
     for line in output.splitlines():
         line = line.strip()
-        if line.startswith(("error:", "equivalence:", "evidence:")) or "FAIL" in line:
+        if line.startswith(("error:", "equivalence:", "evidence:", "----------", "expected ")) \
+                or "FAIL" in line or "panicked" in line:
             return " ".join(line.split())[:300]
     return ""
 

@@ -15,10 +15,14 @@ EPS = 9.999999974752427e-07  # f32(1e-6), the epsilon of vLLM's norm tests
 
 @dataclass(frozen=True)
 class Array:
+    """`base`, when given, places the array: a case passes the tensor's own start as an
+    `Int` address when the analyzed block touches only a slice of it."""
+
     name: str
     kind: str  # "in", "out" or "inout"
     dtype: str
     shape: tuple
+    base: int | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ class Case:
     check: str
     spec: str | None = None
     dims: dict = field(default_factory=dict)
+    cta: tuple = (0, 0, 0)  # the block Volta analyzes
 
 
 # ===== RMSNorm (csrc/layernorm_kernels.cu) =====
@@ -117,6 +122,42 @@ def fused_add_rms_norm(name, hidden, width=8, check="ACCEPT", note=""):
     )
 
 
+OUT_BASE = 0x100000  # where a sliced output tensor starts, past the auto-placed arrays
+
+
+def qk_rms_norm(name, batch, heads, kv_heads, head_dim, cta, check="ACCEPT", note=""):
+    """`rms_norm(out, q, weight, eps)` on q = qkv[..., :heads * head_dim] viewed [batch, heads,
+    head_dim] (a 3-D q/k norm): row strides head_dim and (heads + 2 kv_heads) head_dim, grid
+    batch * heads; block `cta` normalizes head cta % heads of batch cta / heads into its row of
+    the contiguous `out`, which the case registers alone."""
+    vec = math.gcd(8, head_dim)
+    stride3 = (heads + 2 * kv_heads) * head_dim
+    b, h = divmod(cta, heads)
+    row_bytes = head_dim * 2
+    return Case(
+        name=name,
+        description=f"rms_norm, 3-D q of qkv, bf16, batch {batch} x {heads} heads of {head_dim} "
+                    f"(row stride {stride3}), block {cta} = batch {b} head {h}, "
+                    f"{head_dim // vec} threads{note}",
+        source=f"{LAYERNORM}:36 (rms_norm_kernel NUM_DIMS == 3), dispatch :222",
+        unit=LAYERNORM,
+        symbol=f"15rms_norm_kernelI{DTYPE_MANGLED['bf16']}Li{vec}ELi3ELb1E",
+        args=(Int(OUT_BASE, "out"), Ptr("qkv"), Int(head_dim, "input_stride_d2"),
+              Int(stride3, "input_stride_d3"), Int(0), Int(heads, "input_shape_d2"), Int(0),
+              Ptr("weight"), Int(0, "weight_stride"), Float(EPS, "epsilon"),
+              Int(batch * heads, "num_tokens"), Int(head_dim, "hidden_size")),
+        arrays=(Array("qkv", "in", "bf16", (batch, stride3)),
+                Array("weight", "in", "bf16", (head_dim,)),
+                Array("out", "out", "bf16", (head_dim,), base=OUT_BASE + cta * row_bytes)),
+        grid=(batch * heads, 1, 1),
+        block=min(head_dim // vec, 1024),
+        check=check,
+        spec="qk_rms_norm.spec",
+        dims={"R": batch, "S": stride3, "D": head_dim, "B": b, "H": h},
+        cta=(cta, 0, 0),
+    )
+
+
 # ===== Gated activations (csrc/activation_kernels.cu) =====
 
 ACTIVATION = "csrc/activation_kernels.cu"
@@ -158,6 +199,8 @@ CASES = (
     rms_norm("rms_norm_f16_2048", 2048, dtype="f16"),
     fused_add_rms_norm("fused_add_rms_norm_4096", 4096),
     fused_add_rms_norm("fused_add_rms_norm_generic_100", 100, width=0),
+    qk_rms_norm("qk_rms_norm_last_head", 2, 4, 2, 128, cta=7),
+    qk_rms_norm("qk_rms_norm_head_1", 2, 4, 2, 128, cta=1),
     act_and_mul("silu_and_mul_4096", 4096),
     act_and_mul("silu_and_mul_256b_4096", 4096, tokens=129, note=" (token 0 of 129)"),
     act_and_mul("silu_and_mul_scalar_100", 100),
