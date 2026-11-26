@@ -29,9 +29,9 @@ enum MbarrierClusterForm {
 }
 
 impl LoweringContext {
-    /// Validate an `mbarrier.*` state space. Only `.shared`/`.shared::cta` is
-    /// modeled (all the corpus uses; `::cluster` names another CTA's memory):
-    /// `.shared::cluster` is unsupported where the form exists, else invalid.
+    /// Validate an `mbarrier.*` state space. Every cluster holds one CTA, so a
+    /// `.shared::cluster` address (from `mapa` to rank 0) is this CTA's own object,
+    /// as for TMA destinations; the form is invalid on instructions without it.
     fn convert_mbarrier_space(
         &self,
         space: Option<StateSpace>,
@@ -42,8 +42,8 @@ impl LoweringContext {
         match space_qualifier {
             None | Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta)) => {}
             Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cluster))
-                if cluster_form == MbarrierClusterForm::Absent =>
-            {
+                if cluster_form == MbarrierClusterForm::Exists => {}
+            Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cluster)) => {
                 return Err(LowerError::InvalidInstruction {
                     instruction: instruction.to_string(),
                     reason: format!(

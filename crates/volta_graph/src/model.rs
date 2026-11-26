@@ -634,6 +634,9 @@ pub enum Assumption {
     /// The Neuron compiler's allocation is correct: unplaced tiles never overlap, and a tile
     /// declared in a loop iteration is that iteration's own.
     NkiCompilerAllocation,
+    /// The kernel's prerequisite grids completed, their writes visible, before it launched:
+    /// `griddepcontrol.wait` returns at once and `launch_dependents` has no effect.
+    PrerequisiteGridsComplete,
 }
 
 impl Assumption {
@@ -707,6 +710,9 @@ impl Assumption {
             Assumption::NkiCompilerAllocation => {
                 "unplaced NKI tiles never overlap, and a tile declared in a loop iteration is \
                  that iteration's own"
+            }
+            Assumption::PrerequisiteGridsComplete => {
+                "prerequisite grids completed before launch (griddepcontrol.wait returns at once)"
             }
         }
     }

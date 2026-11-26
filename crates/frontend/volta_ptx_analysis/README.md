@@ -101,6 +101,8 @@ Every cluster holds one CTA: `.maxclusterrank` allows it, a `.reqnctapercluster`
 CTAs is a `LowerError`, and `.explicitcluster` (or `.reqnctapercluster`) makes the program's
 `ClusterLaunch` explicit, which `%is_explicit_cluster` reads. `lower_entries` lowers every
 kernel entry of a module without running it (`volta parse --lower`).
+`griddepcontrol` lowers to `Nop`s and marks the program's `GridDependency`, so the run assumes
+its prerequisite grids completed (`Assumption::PrerequisiteGridsComplete`).
 
 ### 2. Evaluation (`eval/`)
 

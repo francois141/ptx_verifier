@@ -1107,6 +1107,18 @@ pub struct LoweredProgram {
 
     /// Whether the kernel runs in an explicit cluster (`.explicitcluster`), always of one CTA
     pub cluster: ClusterLaunch,
+
+    /// Whether the kernel synchronizes with other grids (`griddepcontrol`, PDL)
+    pub grid_dependency: GridDependency,
+}
+
+/// Whether a kernel uses programmatic dependent launch. Volta runs one grid, so a kernel that
+/// does is analyzed as if its prerequisite grids had completed before it launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridDependency {
+    #[default]
+    None,
+    Controlled,
 }
 
 /// How the kernel's one-CTA cluster is launched, which `%is_explicit_cluster` reads.

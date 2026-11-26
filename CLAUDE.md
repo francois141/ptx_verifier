@@ -372,6 +372,8 @@ instruction family, each file depending only on `context` and `error`:
 - An immediate `mbarrier.init`/`mbarrier.arrive` count outside `ir::MBARRIER_COUNT_RANGE` (`[1, 2^20 - 1]`) is a lowering error; a register one aborts the run (`EvalError::MbarrierCountOutOfRange`)
 - `mbarrier.inval` is unsupported for now (after its state-space check): mbarrier operations other than `init` (a write of the 8-byte object) are not memory accesses of the event graph and no check orders an object's other operations before its invalidation, so a late `arrive` racing with the reuse of its bytes would go unnoticed
 - `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
+- `griddepcontrol.wait`/`launch_dependents` (PDL) lower to `Nop`s and set `LoweredProgram::grid_dependency`, which adds `Assumption::PrerequisiteGridsComplete` to the run's provenance: Volta runs one grid, as if its prerequisite grids had completed before launch
+- `mbarrier.arrive`/`expect_tx`/`complete_tx` accept `.shared::cluster`: every cluster holds one CTA, so the address (from `mapa` to rank 0) names this CTA's own object, as for TMA destinations
 - `wgmma` is unsupported for now: every form (`mma_async{.sp}`, `fence`, `commit_group`, `wait_group`) is a lowering error, though the frontend still parses it
 - `define_instr_kinds!` generates the profiling table from one variant
   list: `KIND_COUNT`, `KIND_NAMES`, `kind_index()` (dense index for the

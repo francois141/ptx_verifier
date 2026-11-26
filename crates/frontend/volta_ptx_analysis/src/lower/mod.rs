@@ -27,7 +27,8 @@ use id_collections::{Id, IdVec};
 use crate::ir::symbols::ParamLayout;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{
-    BarrierAlignment, BinOp, ClusterLaunch, InstrId, LoweredInstr, LoweredProgram, Predicate,
+    BarrierAlignment, BinOp, ClusterLaunch, GridDependency, InstrId, LoweredInstr, LoweredProgram,
+    Predicate,
 };
 
 use arith::{
@@ -103,6 +104,7 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
         source_map: ctx.source_map,
         entry_pc: InstrId::from_index(0),
         cluster,
+        grid_dependency: ctx.grid_dependency,
     })
 }
 
@@ -437,6 +439,10 @@ fn lower_parsed_instruction(
             "activemask is not implemented yet (warp divergence is not modeled)",
         )),
         ParsedInstruction::Brkpt => ctx.emit(LoweredInstr::Nop, predicate),
+        ParsedInstruction::Griddepcontrol(_) => {
+            ctx.grid_dependency = GridDependency::Controlled;
+            ctx.emit(LoweredInstr::Nop, predicate)
+        }
         // Reaching a trap during evaluation is an analysis error
         ParsedInstruction::Trap => ctx.emit(LoweredInstr::Trap, predicate),
         ParsedInstruction::Other {

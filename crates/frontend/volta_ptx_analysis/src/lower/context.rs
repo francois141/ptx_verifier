@@ -17,7 +17,8 @@ use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
 use crate::ir::{
-    CmpOp, InstrId, LoweredInstr, MemSpace, MulMode as LoweredMulMode, Operand, Predicate, ShflMode,
+    CmpOp, GridDependency, InstrId, LoweredInstr, MemSpace, MulMode as LoweredMulMode, Operand,
+    Predicate, ShflMode,
 };
 
 use super::error::{LowerError, LowerResult};
@@ -116,6 +117,8 @@ pub struct LoweringContext {
     forward_refs: Vec<(InstrId, String, LabelScopeId)>,
     /// Current instruction span (set before lowering each instruction)
     pub(super) current_span: Option<Span>,
+    /// Whether a `griddepcontrol` instruction was lowered
+    pub(super) grid_dependency: GridDependency,
     /// Block-scope `.param` variables (callseq idiom); flat because the
     /// blocks re-declare them before each use
     pub(super) local_params: HashMap<String, LocalParamSlot>,
@@ -172,6 +175,7 @@ impl LoweringContext {
             pending_labels: Vec::new(),
             forward_refs: Vec::new(),
             current_span: None,
+            grid_dependency: GridDependency::None,
             local_params: HashMap::new(),
             label_scope: SymbolTable::ROOT_LABEL_SCOPE,
             barrier_arrivals: HashMap::new(),

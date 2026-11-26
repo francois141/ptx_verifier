@@ -13,7 +13,7 @@ use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance, ThreadUni
 
 use crate::config::AnalysisConfig;
 use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats};
-use crate::ir::LoweredProgram;
+use crate::ir::{GridDependency, LoweredProgram};
 use crate::lower::{LowerError, lower_function};
 
 /// Errors that prevent the candidate execution from starting at all.
@@ -195,7 +195,7 @@ fn provenance(
     config: &AnalysisConfig,
     program: &LoweredProgram,
 ) -> Provenance {
-    let assumptions = vec![
+    let mut assumptions = vec![
         Assumption::StructuredCta,
         Assumption::SingleCtaAnalyzed,
         Assumption::SingleCtaCluster,
@@ -203,6 +203,9 @@ fn provenance(
         Assumption::ExitedThreadsArrive,
         Assumption::EagerAsyncData,
     ];
+    if program.grid_dependency == GridDependency::Controlled {
+        assumptions.push(Assumption::PrerequisiteGridsComplete);
+    }
     let instructions = program
         .instructions
         .iter()

@@ -945,7 +945,7 @@ fn test_wgmma_is_not_supported() {
 
 /// `mbarrier.init`/`inval`/`test_wait`/`try_wait` take only `.shared{::cta}`
 /// (PTX ISA 9.7.15.16), so `.shared::cluster` is invalid; on `arrive` it is
-/// valid but unmodeled.
+/// valid and, every cluster holding one CTA, names this CTA's own object.
 #[test]
 fn test_mbarrier_shared_cluster_validity() {
     for src in [
@@ -959,12 +959,9 @@ fn test_mbarrier_shared_cluster_validity() {
     let arrive = parse(&ptx!(
         "execution_error/mbarrier_shared_cluster_validity_arrive"
     ));
-    match run_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
-        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
-            let reason = reason.unwrap_or_default();
-            assert!(reason.contains("single-CTA analysis only"), "{reason}");
-        }
-        other => panic!("expected unsupported, got {other:?}"),
+    if let Err(AnalysisError::Lower(e)) = run_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1)))
+    {
+        panic!("mbarrier.arrive.shared::cluster should lower, got {e}");
     }
 }
 
