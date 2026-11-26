@@ -198,6 +198,50 @@ def rope(name, tokens, heads, kv_heads, head_size, cta, neox=True, check="ACCEPT
     )
 
 
+# ===== Fused q/k RMSNorm + RoPE (csrc/fused_qknorm_rope_kernel.cu, TensorRT-LLM's) =====
+
+QKNORM_ROPE = "csrc/fused_qknorm_rope_kernel.cu"
+QKV_BASE = 0x400000  # where qkv starts; a case registers one token's q and k heads
+
+
+def qk_norm_rope(name, tokens, nq, nk, nv, head_dim, cta, neox=True, check="ACCEPT", note=""):
+    """`fused_qk_norm_rope(qkv, nq, nk, nv, head_dim, eps, q_weight, k_weight, cos_sin_cache,
+    is_neox, positions)` in place on bf16 qkv [tokens, (nq + nk + nv) * head_dim] with a bf16
+    cache of rot = head_dim and positions[t] = t, the base kernel (token_heads_per_warp 1 off
+    sm_90): one warp per (token, q or k head), 256 threads, grid ceil(tokens (nq + nk) / 8),
+    dispatch :626. With nq + nk = 8, block `cta` is token `cta`, whose q and k heads the case
+    registers (v is neither read nor written)."""
+    assert nq + nk == 8, "one token per block"
+    e = head_dim // 2
+    head = (lambda h: (h, 2, e)) if neox else (lambda h: (h, e, 2))
+    weight = (2, e) if neox else (e, 2)
+    row = (nq + nk + nv) * head_dim * 2
+    q_at = QKV_BASE + cta * row
+    return Case(
+        name=name,
+        description=f"fused_qk_norm_rope, {'NeoX' if neox else 'GPT-J'}, bf16, {tokens} tokens of "
+                    f"{nq} q / {nk} k / {nv} v heads of {head_dim}, full rotary, block {cta}{note}",
+        source=f"{QKNORM_ROPE}:104 (fusedQKNormRopeKernel), dispatch :626",
+        unit=QKNORM_ROPE,
+        symbol=f"21fusedQKNormRopeKernelI{DTYPE_MANGLED['bf16']}S3_Li{head_dim}ELb{int(not neox)}E",
+        args=(Int(QKV_BASE, "qkv"), Int(nq, "num_heads_q"), Int(nk, "num_heads_k"),
+              Int(nv, "num_heads_v"), Float(EPS, "eps"), Ptr("qw"), Ptr("kw"), Ptr("cache"),
+              Ptr("positions"), Int(tokens, "num_tokens"), Int(head_dim, "rotary_dim")),
+        arrays=(Array("positions", "index", "i64", (tokens,)),
+                Array("cache", "in", "bf16", (tokens, 2, e)),
+                Array("qw", "in", "bf16", weight),
+                Array("kw", "in", "bf16", weight),
+                Array("q", "inout", "bf16", head(nq), base=q_at),
+                Array("k", "inout", "bf16", head(nk), base=q_at + nq * head_dim * 2)),
+        grid=(-(-tokens * (nq + nk) // 8), 1, 1),
+        block=256,
+        check=check,
+        spec="qk_norm_rope_neox.spec" if neox else "qk_norm_rope_gptj.spec",
+        dims={"TWO": 2, "HQ": nq, "HK": nk, "E": e, "D": head_dim, "PM": tokens, "P": cta},
+        cta=(cta, 0, 0),
+    )
+
+
 # ===== Gated activations (csrc/activation_kernels.cu) =====
 
 ACTIVATION = "csrc/activation_kernels.cu"
@@ -244,6 +288,10 @@ CASES = (
     rope("rope_neox_gqa", 4, 8, 2, 128, cta=3),
     rope("rope_gptj_gqa", 4, 8, 2, 128, cta=2, neox=False),
     rope("rope_neox_mha_64", 2, 4, 4, 64, cta=1),
+    qk_norm_rope("qk_norm_rope_neox_128", 4, 6, 2, 2, 128, cta=3),
+    qk_norm_rope("qk_norm_rope_gptj_128", 4, 6, 2, 2, 128, cta=1, neox=False),
+    qk_norm_rope("qk_norm_rope_neox_64", 2, 4, 4, 4, 64, cta=1),
+    qk_norm_rope("qk_norm_rope_neox_256", 2, 4, 4, 4, 256, cta=0),
     act_and_mul("silu_and_mul_4096", 4096),
     act_and_mul("silu_and_mul_256b_4096", 4096, tokens=129, note=" (token 0 of 129)"),
     act_and_mul("silu_and_mul_scalar_100", 100),
