@@ -158,6 +158,46 @@ def qk_rms_norm(name, batch, heads, kv_heads, head_dim, cta, check="ACCEPT", not
     )
 
 
+# ===== Rotary embedding (csrc/pos_encoding_kernels.cu) =====
+
+POS_ENCODING = "csrc/pos_encoding_kernels.cu"
+Q_BASE, K_BASE = 0x200000, 0x300000  # where query and key start; a case registers one token
+
+
+def rope(name, tokens, heads, kv_heads, head_size, cta, neox=True, check="ACCEPT", note=""):
+    """`rotary_embedding(positions, query, key, head_size, cos_sin_cache, is_neox)` in place on
+    bf16 query [tokens, heads, head_size] and key [tokens, kv_heads, head_size] with a bf16
+    cache of rot_dim = head_size, positions[t] = t: grid tokens, block min(heads * rot / 2,
+    512), dispatch :105. Block `cta` rotates token `cta`, whose query and key slices the case
+    registers."""
+    e = head_size // 2
+    token = (lambda h: (h, 2, e)) if neox else (lambda h: (h, e, 2))
+    q_row, k_row = heads * head_size * 2, kv_heads * head_size * 2
+    return Case(
+        name=name,
+        description=f"rotary_embedding, {'NeoX' if neox else 'GPT-J'}, bf16, {tokens} tokens of "
+                    f"{heads} q / {kv_heads} kv heads of {head_size}, block {cta}{note}",
+        source=f"{POS_ENCODING}:78 (rotary_embedding_kernel), dispatch :105",
+        unit=POS_ENCODING,
+        symbol=f"23rotary_embedding_kernelI{DTYPE_MANGLED['bf16']}S2_Lb{int(neox)}E",
+        args=(Ptr("positions"), Int(Q_BASE, "query"), Int(K_BASE, "key"), Ptr("cache"),
+              Int(head_size, "rot_dim"), Int(heads * head_size, "query_stride"),
+              Int(kv_heads * head_size, "key_stride"), Int(head_size, "head_stride"),
+              Int(heads, "num_heads"), Int(kv_heads, "num_kv_heads"),
+              Int(head_size, "head_size"), Int(0, "rope_dim_offset"), Int(0, "inverse")),
+        arrays=(Array("positions", "index", "i64", (tokens,)),
+                Array("cache", "in", "bf16", (tokens, 2, e)),
+                Array("query", "inout", "bf16", token(heads), base=Q_BASE + cta * q_row),
+                Array("key", "inout", "bf16", token(kv_heads), base=K_BASE + cta * k_row)),
+        grid=(tokens, 1, 1),
+        block=min(heads * head_size // 2, 512),
+        check=check,
+        spec="rope_neox.spec" if neox else "rope_gptj.spec",
+        dims={"TWO": 2, "H": heads, "KH": kv_heads, "E": e, "PM": tokens, "P": cta},
+        cta=(cta, 0, 0),
+    )
+
+
 # ===== Gated activations (csrc/activation_kernels.cu) =====
 
 ACTIVATION = "csrc/activation_kernels.cu"
@@ -201,6 +241,9 @@ CASES = (
     fused_add_rms_norm("fused_add_rms_norm_generic_100", 100, width=0),
     qk_rms_norm("qk_rms_norm_last_head", 2, 4, 2, 128, cta=7),
     qk_rms_norm("qk_rms_norm_head_1", 2, 4, 2, 128, cta=1),
+    rope("rope_neox_gqa", 4, 8, 2, 128, cta=3),
+    rope("rope_gptj_gqa", 4, 8, 2, 128, cta=2, neox=False),
+    rope("rope_neox_mha_64", 2, 4, 4, 64, cta=1),
     act_and_mul("silu_and_mul_4096", 4096),
     act_and_mul("silu_and_mul_256b_4096", 4096, tokens=129, note=" (token 0 of 129)"),
     act_and_mul("silu_and_mul_scalar_100", 100),
