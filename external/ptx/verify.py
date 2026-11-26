@@ -28,7 +28,7 @@ PTX_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PTX_ROOT.parent.parent
 VOLTA = REPO_ROOT / "target" / "release" / "volta"
 SURVEY_DIR = PTX_ROOT / "survey"
-FRAMEWORKS = ("vllm",)
+FRAMEWORKS = ("vllm", "TensorRT-LLM", "flash-attention")
 DEFAULT_TABLE = PTX_ROOT / "output" / "ptx_table.md"
 
 ENTRY = re.compile(r"^\.visible \.entry (\S+?)\(", re.MULTILINE)
@@ -176,7 +176,10 @@ def main() -> int:
     subprocess.run(["cargo", "build", "--release", "-q", "-p", "volta_cli"], cwd=REPO_ROOT, check=True)
     results = []
     for framework in args.frameworks or FRAMEWORKS:
-        registry = load(PTX_ROOT / framework / "cases.py", f"{framework}_cases")
+        path = PTX_ROOT / framework / "cases.py"
+        if not path.exists():
+            continue
+        registry = load(path, f"{framework.replace('-', '_')}_cases")
         cases = [c for c in registry.CASES if args.k in c.name]
         if args.build:
             build(framework, cases)
