@@ -58,10 +58,12 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
 # question of volta_findings.txt ((a) happens-before through tracked async ops, (c) the
 # proxy-order pair named); "lead": a defect read in the code before Volta reported it, which
 # the evaluation does not count; "gap": a rejection that is Volta's own error (a false refutation
-# from its exact-real model), counted as incomplete. A rejection under no marker is "untriaged".
+# from its exact-real model, a false deadlock from matching warp collectives at one pc), counted
+# as incomplete. A rejection under no marker is "untriaged".
 REJECTIONS = {
     "FlashInfer": {"benign": ["MergeStatesLargeNumIndexSetsKernel",
                               "PersistentVariableLengthMergeStatesKernel"]},
+    "vLLM": {"gap": ["topk_softplus_sqrt_f16_int64.cu:22topkGatingSoftplusSqrtILi8ELi32ELi4ELi16ELi32ELb1Ell6__halfEE"]},
     "TensorRT-LLM": {"lead": ["prepareAttentionMaskIiLNS1_17AttentionMaskTypeE2EE"],
                      "gap": ["mhcHcHeadApply"]},
     "ThunderKittens": {"open": ["level_07", "level_08"]},
