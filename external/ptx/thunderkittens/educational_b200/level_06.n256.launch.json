@@ -29,5 +29,7 @@
       {"name": "D.tma", "offset": 64, "tensor_map": {"array": "D", "dtype": "bf16", "dims": [64, 256, 4, 1, 1], "strides": [512, 128, 131072, 131072], "box": [64, 128, 2, 1, 1], "swizzle": "128B"}}
     ]},
     {"name": "N", "int": 256}
-  ]
+  ],
+  "spec": "matmul_D.spec",
+  "dims": {"N": 256, "TR": 128, "TC": 128}
 }

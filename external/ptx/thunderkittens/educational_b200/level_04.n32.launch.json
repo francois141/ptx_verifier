@@ -22,5 +22,7 @@
       {"name": "C.cols",    "offset": 536, "u64": 32},
       {"name": "N",         "offset": 768, "i32": 32}
     ]}
-  ]
+  ],
+  "spec": "matmul_C.spec",
+  "dims": {"N": 32, "TR": 32, "TC": 32}
 }

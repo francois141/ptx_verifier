@@ -94,6 +94,9 @@ ptx:
 setup:
     uv run external/ptx/extraction/tritonbench.py
     uv run external/ptx/extraction/thunderkittens.py
+    uv run external/ptx/extraction/thunderkittens.py --suite kernels
+    uv run external/ptx/extraction/thunderkittens.py --suite units
+    uv run external/ptx/extraction/thunderkittens.py --suite patched
     uv run external/ptx/extraction/gluon.py
     uv run external/ptx/extraction/tilelang_kernels.py
     uv run external/ptx/extraction/ai_compiler.py
@@ -112,7 +115,9 @@ external *args:
 tritonbench *args:
     python3 external/ptx/races.py --framework tritonbench {{args}}
 
-# Check the ThunderKittens kernels for data races
+# Suites: educational_b200/, kernels/, units/ (20 curated tests; all ~840 after `thunderkittens_units.py --all`)
+# and patched/ (the fixes of thunderkittens/bugs.txt); `-k units/ --jobs 4 --mem-gb 2` runs one in parallel.
+# Check the ThunderKittens kernels for data races, and against their specs where they have one
 kittens *args:
     python3 external/ptx/races.py --framework thunderkittens {{args}}
 

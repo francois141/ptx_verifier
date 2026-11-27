@@ -13,5 +13,7 @@
     {"ptr": "B"},
     {"ptr": "C"},
     {"name": "N", "int": 20}
-  ]
+  ],
+  "spec": "matmul_C.spec",
+  "dims": {"N": 20, "TR": 20, "TC": 20}
 }

@@ -3,15 +3,20 @@
     python3 external/ptx/races.py                               # every framework
     python3 external/ptx/races.py --framework thunderkittens    # one of `FRAMEWORKS`
     python3 external/ptx/races.py --framework tritonbench -k add_example --timeout 300
+    python3 external/ptx/races.py --framework thunderkittens -k units/ --jobs 4 --mem-gb 2
 
 Builds the release `volta` CLI, then analyzes each launch file
 `<framework>/**/<stem>.<case>.launch.json`, in name order, with
 `volta analyze <stem>.ptx --config <launch file>` (the `<stem>.ptx` beside
-it). A run is RACE-FREE when the graph checks verify it, a RACE-CONDITION
+it), or `volta solve` when the launch file names a `spec`, whose verdict (ACCEPT,
+REJECT or UNKNOWN: race free and equal to the spec, refuted or racy, undecided)
+fills the `spec` column. A run is RACE-FREE when the graph checks verify it, a RACE-CONDITION
 when a memory-conflict, proxy-order or tensor-order check fails, CHECK-FAILED
 or DEADLOCK when another check fails, UNSUPPORTED when it reaches a construct
-Volta does not model, and UNKNOWN when it has no verdict within `--timeout`.
-Every run goes through `memcap.py`, MEMORY when killed past `--mem-gb` (default 6).
+Volta does not model (a cluster of several CTAs included), and UNKNOWN when it has no
+verdict within `--timeout`. Every run goes through `memcap.py`, MEMORY when killed past
+`--mem-gb` (default 6), and `--jobs` is lowered so that jobs x cap stays within half the
+machine's memory.
 Each framework's outcomes go to `output/<framework>.csv` (a `-k` run updates only its rows);
 the exit status is 1
 if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
@@ -20,12 +25,14 @@ if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
 import argparse
 import csv
 import enum
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +73,9 @@ PARSE_FAILED = re.compile(r"\b(Invalid [a-z ]+: \S+)$")
 EXECUTION_UNSUPPORTED = re.compile(r"^the execution stopped: (unsupported at .*)")
 CHECK_LINE = re.compile(r"^  (\S.*?) \((?:Algorithms? |PTX ISA |phase chain)[^)]*\)\s+(PASS|FAIL|UNKNOWN)$")
 VERDICT_LINE = re.compile(r"^GRAPH VERIFICATION: (VERIFIED|REJECTED|UNKNOWN)")
+SPEC_VERDICT_LINE = re.compile(r"^VERDICT: (ACCEPT|REJECT|UNKNOWN)")
+# A launch Volta cannot model, rejected while reading the launch file.
+LAUNCH_UNSUPPORTED = re.compile(r"(a cluster of [^:]*?one CTA per cluster[^.]*)")
 WRITTEN_LINE = re.compile(r"^  output '[^']*': (\d+) element\(s\) written$")
 NO_OUTPUTS_LINE = re.compile(r"^  no outputs: (.*)$")
 DEADLOCK_LINE = re.compile(r"^  trace: deadlock")
@@ -97,9 +107,11 @@ class Style:
 
 @dataclass(frozen=True)
 class CliReport:
-    """What `volta analyze` printed; `verdict` is None when it stopped before one."""
+    """What `volta analyze` or `volta solve` printed; `verdict` is None when it stopped
+    before one, `spec` the spec verdict of a `solve`."""
 
     verdict: str | None
+    spec: str | None
     checks: tuple[tuple[str, str, str], ...]  # (check, PASS|FAIL|UNKNOWN, first finding)
     written: int
     no_outputs: str | None
@@ -108,9 +120,13 @@ class CliReport:
 
 
 def parse_cli(stdout: str) -> CliReport:
-    verdict, checks, written, no_outputs, deadlock, reasons = None, [], 0, None, False, []
+    verdict, spec, checks, written, no_outputs, deadlock, reasons = None, None, [], 0, None, False, []
     for line in stdout.splitlines():
-        if checks and checks[-1][2] == "" and line.startswith("      "):
+        if m := SPEC_VERDICT_LINE.match(line):
+            spec = m[1]
+        elif spec and line.startswith("  "):
+            reasons.append(line.strip())
+        elif checks and checks[-1][2] == "" and line.startswith("      "):
             checks[-1] = (*checks[-1][:2], line.strip())
         elif m := CHECK_LINE.match(line):
             checks.append((m[1], m[2], ""))
@@ -124,7 +140,11 @@ def parse_cli(stdout: str) -> CliReport:
             no_outputs = m[1]
         elif DEADLOCK_LINE.match(line):
             deadlock = True
-    return CliReport(verdict, tuple(checks), written, no_outputs, deadlock, tuple(reasons))
+    if verdict is None and checks:  # `solve` prints the checks but no conclusion line
+        verdicts = {v for _, v, _ in checks}
+        verdict = "REJECTED" if "FAIL" in verdicts else \
+            "UNKNOWN" if "UNKNOWN" in verdicts or no_outputs is not None else "VERIFIED"
+    return CliReport(verdict, spec, tuple(checks), written, no_outputs, deadlock, tuple(reasons))
 
 
 class VoltaFailure(Exception):
@@ -138,6 +158,8 @@ def classify(report: CliReport, stderr: str) -> tuple[Outcome, str]:
         if m := LOWERING_FAILED.search(error):
             return Outcome.UNSUPPORTED, m[1]
         if m := PARSE_FAILED.search(error):
+            return Outcome.UNSUPPORTED, m[1]
+        if m := LAUNCH_UNSUPPORTED.search(error):
             return Outcome.UNSUPPORTED, m[1]
         raise VoltaFailure(error)
     coverage = f"{report.written} outputs written"
@@ -178,10 +200,17 @@ def build_volta() -> None:
     )
 
 
+def physical_memory_gb() -> float:
+    out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout
+    return int(out) / 2**30 if out.strip().isdigit() else 16.0
+
+
 @dataclass(frozen=True)
 class Run:
     name: str
+    kernel: str
     outcome: Outcome
+    spec: str  # the spec verdict, "" without a spec
     seconds: float
     detail: str
 
@@ -189,40 +218,47 @@ class Run:
 def check(launch: Path, root: Path, timeout: float, mem_gb: float) -> Run:
     name = str(launch.relative_to(root)).removesuffix(".launch.json")
     ptx = launch.with_name(launch.name.split(".")[0] + ".ptx")
+    config = json.loads(launch.read_text())
+    kernel, has_spec = config.get("kernel", ""), "spec" in config
     # Rendering outputs can cost GBs (shared subterms print as trees); counts suffice.
-    command = [
-        str(VOLTA), "--no-log-file", "analyze", str(ptx), "--config", str(launch),
-        "--print-outputs", "0", "--no-profile",
-    ]
+    command = [str(VOLTA), "--no-log-file", "solve" if has_spec else "analyze", str(ptx),
+               "--config", str(launch), "--print-outputs", "0", *([] if has_spec else ["--no-profile"])]
     start = time.perf_counter()
     with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         status, note = memcap.run(command, mem_gb, timeout, stdout=out, stderr=err, text=True)
         out.seek(0)
         err.seek(0)
         done = subprocess.CompletedProcess(command, status, out.read(), err.read())
+    pending = "UNKNOWN" if has_spec else ""
     if status == memcap.KILLED_FOR_TIME:
-        return Run(name, Outcome.UNKNOWN, timeout, f"no verdict within {timeout:.0f}s")
+        return Run(name, kernel, Outcome.UNKNOWN, pending, timeout, f"no verdict within {timeout:.0f}s")
     if status == memcap.KILLED_FOR_MEMORY:
-        return Run(name, Outcome.MEMORY, time.perf_counter() - start, note)
+        return Run(name, kernel, Outcome.MEMORY, pending, time.perf_counter() - start, note)
+    report = parse_cli(done.stdout)
     try:
-        outcome, detail = classify(parse_cli(done.stdout), done.stderr)
+        outcome, detail = classify(report, done.stderr)
     except VoltaFailure as failure:
         outcome, detail = Outcome.ERROR, str(failure)
-    return Run(name, outcome, time.perf_counter() - start, detail)
+    spec = (report.spec or "UNKNOWN") if has_spec else ""
+    if spec == "REJECT" and outcome == Outcome.RACE_FREE:
+        detail = next((r for r in report.reasons if r.startswith("equivalence:")), detail)
+    return Run(name, kernel, outcome, spec, time.perf_counter() - start, detail)
 
 
-def check_framework(framework: str, match: str, timeout: float, mem_gb: float, style: Style) -> bool:
-    """Run every matching launch file of `framework` in order; whether any run failed."""
+def check_framework(framework: str, match: str, timeout: float, mem_gb: float, jobs: int,
+                    style: Style) -> bool:
+    """Run every matching launch file of `framework`, reporting in order; whether any run failed."""
     root = EXTERNAL_ROOT / framework
     launches = [p for p in sorted(root.rglob("*.launch.json")) if match in str(p.relative_to(root))]
     print(style.paint(f"== {framework}: {len(launches)} launches", BOLD), flush=True)
     width = max((len(str(p.relative_to(root))) for p in launches), default=0) - len(".launch.json")
     runs = []
-    for launch in launches:
-        run = check(launch, root, timeout, mem_gb)
-        runs.append(run)
-        painted = style.paint(f"{run.outcome.value:<{OUTCOME_WIDTH}}", *OUTCOME_CODES[run.outcome])
-        print(f"{run.name:<{width}}  {painted}  {run.seconds:6.1f}s  {run.detail}", flush=True)
+    with ThreadPoolExecutor(jobs) as pool:
+        for run in pool.map(lambda launch: check(launch, root, timeout, mem_gb), launches):
+            runs.append(run)
+            painted = style.paint(f"{run.outcome.value:<{OUTCOME_WIDTH}}", *OUTCOME_CODES[run.outcome])
+            spec = f"{run.spec:<6}  " if run.spec else " " * 8
+            print(f"{run.name:<{width}}  {painted}  {spec}{run.seconds:6.1f}s  {run.detail}", flush=True)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     csv_path = OUTPUT_DIR / f"{framework}.csv"
@@ -231,15 +267,20 @@ def check_framework(framework: str, match: str, timeout: float, mem_gb: float, s
     if match and csv_path.exists():
         rows = {row["launch"]: row for row in csv.DictReader(csv_path.open())}
     for r in runs:
-        rows[r.name] = {"launch": r.name, "outcome": r.outcome.value,
-                        "seconds": f"{r.seconds:.3f}", "detail": r.detail}
+        rows[r.name] = {"launch": r.name, "kernel": r.kernel, "outcome": r.outcome.value,
+                        "spec": r.spec, "seconds": f"{r.seconds:.3f}", "detail": r.detail}
     with csv_path.open("w", newline="") as out:
-        writer = csv.DictWriter(out, fieldnames=["launch", "outcome", "seconds", "detail"])
+        writer = csv.DictWriter(out, restval="", extrasaction="ignore",
+                                fieldnames=["launch", "kernel", "outcome", "spec", "seconds", "detail"])
         writer.writeheader()
         writer.writerows(rows[name] for name in sorted(rows))
     outcomes = [r.outcome for r in runs]
     failed = any(o in FAILURES for o in outcomes)
     counts = ", ".join(f"{outcomes.count(o)} {o.value}" for o in Outcome if o in outcomes) or "no launches"
+    specs = [r.spec for r in runs if r.spec]
+    if specs:
+        counts += "; against a spec: " + ", ".join(
+            f"{specs.count(v)} {v}" for v in ("ACCEPT", "REJECT", "UNKNOWN") if v in specs)
     print(f"\n{framework}: {style.paint(counts, BOLD, RED if failed else GREEN)}\nwrote {csv_path}\n", flush=True)
     return failed
 
@@ -250,6 +291,7 @@ def main() -> int:
     parser.add_argument("-k", dest="match", default="", help="only launches whose name contains this")
     parser.add_argument("--timeout", type=float, default=60, help="seconds per run (default 60)")
     parser.add_argument("--mem-gb", type=float, default=6.0, help="kill a run past this resident memory (GiB)")
+    parser.add_argument("--jobs", type=int, default=1, help="runs at a time (default 1)")
     parser.add_argument("--volta", type=Path, help="a volta binary to run (default: build the release one)")
     args = parser.parse_args()
 
@@ -259,8 +301,12 @@ def main() -> int:
         VOLTA = args.volta.resolve()
     else:
         build_volta()
+    budget = physical_memory_gb() / 2
+    jobs = max(1, min(args.jobs, int(budget // args.mem_gb)))
+    if jobs < args.jobs:
+        print(f"running {jobs} jobs: {args.jobs} x {args.mem_gb} GB would exceed {budget:.0f} GB")
     frameworks = (args.framework,) if args.framework else FRAMEWORKS
-    failed = [check_framework(f, args.match, args.timeout, args.mem_gb, style) for f in frameworks]
+    failed = [check_framework(f, args.match, args.timeout, args.mem_gb, jobs, style) for f in frameworks]
     return 1 if any(failed) else 0
 
 

@@ -4,9 +4,10 @@ the race sweeps' outcomes (`output/<framework>.csv`, written by `races.py`).
 
     python3 external/ptx/eval_table.py            # markdown table on stdout
 
-A kernel is one PTX entry (a case's unit and symbol; a race-sweep launch's PTX stem). A kernel
+A kernel is one PTX entry (a case's unit and symbol; a race-sweep launch's PTX stem, with its
+`kernel` when one PTX holds several launched entries, as ThunderKittens' unit tests do). A kernel
 with a failing run (not ACCEPT/VERIFIED) covered by a triaged finding counts under Findings only; any other is *verified* when one of its runs is ACCEPT (race free and equal to its spec) or VERIFIED/RACE-FREE
-(race free, no spec), *incomplete* when none is and some run stopped at a Volta gap (ABORT,
+(race free, no spec; a sweep run checked against a spec that refutes it is rejected), *incomplete* when none is and some run stopped at a Volta gap (ABORT,
 UNKNOWN, ERROR, UNSUPPORTED, MEMORY), and otherwise rejected. Rejections are not all findings, so `FINDINGS` lists the triaged bugs
 by hand, with `bugs_PTX/volta_findings.txt`'s numbering, and `REJECTIONS` the other rejected
 kernels by category (benign race, open question, uncounted lead); any left over is untriaged.
@@ -43,7 +44,14 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
                "11-tcgen05-mma-scaled/mma_scaled_contig", "11-tcgen05-mma-scaled/simple_mma_scaled"],
               "CLC get_first_ctaid on a declined response, latent (7)":
               ["=12-cluster-launch-control/persistent_matmul_kernel"]},
-    "ThunderKittens": {"level_06 parity-aliasing hang, latent (5)": ["level_06"]},
+    "ThunderKittens": {"level_06 parity-aliasing hang, latent (5)": ["level_06"],
+                       # thunderkittens/bugs.txt's numbering; each fix verifies (thunderkittens/patched/)
+                       "TMA unit tests reuse smem without a warp sync (TK-2, TK-3, TK-6)":
+                       ["units/thread_memory_tile_tma", "units/thread_memory_vec_tma"],
+                       "tcgen05 unit test per-warp mbarrier init, parity reuse (TK-4, TK-7)":
+                       ["units/group_mma_tensor_mma"],
+                       "managed tensor_allocator deallocs before other warps' TMEM reads (TK-5)":
+                       ["units/group_memory_tile_tensor_to_register"]},
     "AI compiler": {"Mamba2ChunkScanForward missing fence.proxy.async, latent (3)":
                     ["Mamba2ChunkScanForward"],
                     "FusedGEMMAddSiLU parity-aliasing hang, latent (6)":
@@ -143,9 +151,18 @@ def sweep_verdicts(name: str) -> dict[str, set[str]]:
     path = OUTPUT / f"{name}.csv"
     if not path.exists():
         return {}
+    rows = list(csv.DictReader(path.open()))
+    entries = defaultdict(set)
+    for row in rows:
+        entries[row["launch"].split(".")[0]].add(row.get("kernel", ""))
     kernels = defaultdict(set)
-    for row in csv.DictReader(path.open()):
-        kernels[row["launch"].split(".")[0]].add(row["outcome"])
+    for row in rows:
+        stem = row["launch"].split(".")[0]
+        if stem.startswith("patched/"):  # a fixed copy of a kernel (a finding's control), not shipped
+            continue
+        key = stem if len(entries[stem]) == 1 else f"{stem}:{row['kernel']}"
+        refuted = row.get("spec") == "REJECT" and row["outcome"] in VERIFIED
+        kernels[key].add("REJECT" if refuted else row["outcome"])
     return kernels
 
 

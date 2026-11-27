@@ -1,0 +1,267 @@
+ThunderKittens bugs found by Volta
+==================================
+
+ThunderKittens at 67845f5f (2026-09-12), the submodule external/ptx/sources/ThunderKittens,
+compiled for sm_100a (fftconv_non_pc for sm_90a) by external/ptx/extraction/thunderkittens.py.
+Run them with `just kittens` (external/ptx/races.py --framework thunderkittens); verdicts are in
+external/ptx/output/thunderkittens.csv.
+
+TK-1 to TK-7 come from Volta runs of the educational GEMMs and the unit tests. TK-8 to TK-10
+are in production kernels Volta cannot run (2-CTA clusters): TK-8 was found and checked with
+SentryWard (~/Desktop/sentryward), TK-9 and TK-10 by reading the code.
+
+Every bug below is a synchronization error: on the schedule Volta found, a thread overwrites,
+re-initializes or frees something another thread can still be using. Each is "latent": the
+warps usually stay converged and the asynchronous ops finish quickly, so the tests pass on
+hardware, but the PTX memory model does not guarantee the order they rely on. For TK-2 to TK-7,
+a fixed copy of the test (`FIXES` in extraction/thunderkittens.py, built into
+thunderkittens/patched/) is race free and equal to its spec, which confirms the diagnosis.
+TK-1 was confirmed independently with SentryWard.
+
+Summary
+-------
+  TK-1  educational level_06: a lagging thread's parity wait can miss a phase (hang)   kernel
+  TK-2  TMA load unit tests: smem and mbarrier reused with no __syncwarp                test
+  TK-3  TMA store unit tests: only lane 0 waits for the TMA store to finish reading     test
+  TK-4  tcgen05 unit test: every warp runs mbarrier.init on the same live mbarrier      test
+  TK-5  managed tensor_allocator: warp 0 frees Tensor Memory other warps still read     library
+  TK-6  tile TMA store test: store_async_read_wait<3> waits for too few stores          test
+  TK-7  tcgen05 accumulate test: second MMA re-arms the mbarrier before every warp
+        saw the first phase (hang)                                                      test
+  TK-8  B300 attention: the corrector signals rescale_finished from one thread before
+        its other warps waited on corr_arrived (missed phase, hang)                     kernel
+  TK-9  B300 causal attention, persistent: corrector warps read max_vec_smem after the
+        signal that lets softmax overwrite it (wrong O and LSE)                         kernel
+  TK-10 B200 GEMMs (bf16, fp8, int8): CTA 1 sends a remote mbarrier arrive into CTA 0's
+        shared memory after CTA 0 may have exited                                       kernel
+
+
+TK-1  level_06: parity aliasing on inputs_arrived (latent hang)
+----------------------------------------------------------------
+Where:    kernels/gemm/educational_b200/level_06.cu (wait(inputs_arrived, phase), line 73)
+Volta:    educational_b200/level_06.n128, .n256: CHECK-FAILED, barrier epochs (mbarrier phases)
+          EpochViolation and mbarrier release order Unordered.
+What:     Thread 0 re-arms inputs_arrived for phase k+1 (expect_bytes + TMA) as soon as it has
+          passed phase k itself. The other 127 threads only ever wait on inputs_arrived, and
+          nothing orders their wait for phase k before thread 0 arms phase k+1. If phase k+1
+          completes before a lagging thread waits, its parity wait for k sees the parity it
+          expects only after phase k+2, so it skips a phase or hangs.
+Fix:      a named barrier of the 128 threads (bar.sync 2, 128) after each inputs_arrived wait.
+Status:   confirmed with SentryWard (not_wellsynced; race_free once fixed, and Volta VERIFIED).
+          Already volta_findings.txt (5).
+
+
+TK-2  TMA load unit tests reuse shared memory and the mbarrier without a warp sync
+--------------------------------------------------------------------------------
+Where:    tests/thread/memory/tile/tma.cu, test_load (lines 37-40) and test_load_oob (84-87);
+          tests/thread/memory/vec/tma.cu, test_load (lines 31-33).
+Volta:    units/thread_memory_tile_tma.test_load.bf16.1.1.1, units/thread_memory_vec_tma.
+          test_load.bf16.1.1: CHECK-FAILED (EpochViolation on smem_semaphore, mbarrier release
+          order), and REJECT against the identity spec: on the schedule Volta runs, the copy
+          is refuted numerically.
+What:     Each loop iteration is: lane 0 arms smem_semaphore and issues the TMA loads into
+          shared_tile; the warp waits; every lane copies shared_tile out with warp::store. Then
+          lane 0 starts the next iteration. warp::store ends with no __syncwarp, so lane 0 can
+          issue the next TMA load into shared_tile while other lanes are still reading it (a
+          generic read / async-proxy write race), and can re-arm smem_semaphore before they
+          waited on the current phase (the TK-1 parity hazard).
+Fix:      __syncwarp() at the end of each iteration, after the warp::store loop.
+Status:   fixed tests (patched/thread_memory_tile_tma.test_load, patched/thread_memory_vec_tma.
+          test_load) are RACE-FREE and ACCEPT.
+
+
+TK-3  TMA store unit tests: only lane 0 waits for the TMA store to finish reading
+--------------------------------------------------------------------------------
+Where:    tests/thread/memory/tile/tma.cu, test_store (lines 118-119);
+          tests/thread/memory/vec/tma.cu, test_store (lines 57-60), and the reduce variants.
+Volta:    units/thread_memory_tile_tma.test_store.bf16.1.1.1, units/thread_memory_vec_tma.
+          test_store.bf16.1.1: RACE-CONDITION, MemoryConflict ReadWrite on Shared: the TMA
+          store's read of the tile and a lane's warp::load write into it.
+What:     `if(threadIdx.x == 0) store_async_read_wait()` is followed directly by every lane
+          writing the next data into the same shared tile or vector. Only lane 0 has waited for
+          the in-flight bulk store to finish reading it; lanes 1-31 can overwrite it first.
+Fix:      __syncwarp() after lane 0's store_async_read_wait.
+Status:   the fixed vector test is RACE-FREE and ACCEPT. The tile test also needs TK-6's fix.
+
+
+TK-4  tcgen05 unit test: every warp initializes the same mbarrier
+-----------------------------------------------------------------
+Where:    tests/group/mma/tensor/mma.cu, tcgen05_wrapper (line 85); the same line in
+          tcgen05_nvfp4_k64_wrapper (line 383), read in the code (Volta does not run the
+          block-scaled tests).
+Volta:    units/group_mma_tensor_mma.bf16.st.mm_AB: RACE-CONDITION, MemoryConflict WriteWrite on
+          Shared address 8 (the mbarrier `sem`).
+What:     The kernel runs 4 warps (group<4>), and all of them call
+          kittens::warp::init_semaphore(sem, 0, 1). That function executes mbarrier.init on
+          lane 0 of each calling warp, so four mbarrier.init run on one object, unordered with
+          each other. Re-initializing a live mbarrier without mbarrier.inval is undefined
+          behavior (PTX ISA, mbarrier.init).
+Fix:      `if(threadIdx.x == 0) kittens::init_semaphore(sem, 0, 1);` (the __syncthreads that
+          follows already publishes it).
+Status:   fixed test (patched/group_mma_tensor_mma.bf16.st.mm_AB, with TK-5's fix) is RACE-FREE
+          and ACCEPT.
+
+
+TK-5  managed tensor_allocator frees Tensor Memory other warps may still read
+-----------------------------------------------------------------------------
+Where:    include/types/tensor/tensor.cuh, ~tensor_allocator (lines 150-157): for a 1-CTA
+          allocator, warp 0 calls deprovision() (tcgen05.dealloc) at scope exit with no CTA
+          barrier. Hit by tests/group/mma/tensor/mma.cu (tcgen05_wrapper ends with
+          tcgen05.ld + G::store, line 146) and tests/group/memory/tile/tensor_to_register.cu
+          (group_tensor_reg_load_store's f32/int path, line 68, and group_tensor_reg_lane_row).
+Volta:    units/group_memory_tile_tensor_to_register.group_tensor_reg_load_store.f32.8.2.4.row
+          (CHECK-FAILED) and units/group_mma_tensor_mma.bf16.st.mm_AB (beside TK-4's race):
+          resource lifetime UseNotBeforeDeallocation, a warp's tcgen05.ld unordered with warp
+          0's tcgen05.dealloc.
+What:     Each warp reads its slice of Tensor Memory (tcgen05.ld, tcgen05.wait::ld) and stores
+          it out. Warp 0 then leaves the allocator's scope and deallocates, possibly while warps
+          1-3 are still reading. Kernels that end with a CTA-wide barrier after their last
+          Tensor Memory access (educational levels 06-08) are unaffected. The destructor makes
+          every user responsible for that barrier but does not say so; the 2-CTA path does
+          synchronize, with a cluster barrier.
+Fix:      in the tests, tensor_before_thread_sync(); __syncthreads(); before the scope ends. In
+          the library, the managed destructor could fence and barrier the CTA (or document the
+          requirement).
+Status:   fixed tests (patched/group_memory_tile_tensor_to_register...f32.8.2.4.row,
+          patched/group_mma_tensor_mma.*) are RACE-FREE and ACCEPT.
+
+
+TK-6  tile TMA store test: store_async_read_wait<3> waits for too few stores
+---------------------------------------------------------------------------
+Where:    tests/thread/memory/tile/tma.cu, test_store (line 118).
+Volta:    with TK-3 fixed, still RACE-CONDITION: MemoryConflict ReadWrite on Shared address 512,
+          which is shared_tile[0][1].
+What:     Each iteration stores 4 tiles (4 bulk groups), then the next iteration loads into
+          tile [i][j] after store_async_read_wait<3>() (at most 3 groups still reading). No
+          store is issued between the four loads. Before tile [0][0] the wait retires the oldest
+          group, tile [0][0]'s store, which is correct. Before tiles [0][1], [1][0] and [1][1]
+          the 3 pending groups are exactly those tiles' stores, so the wait returns at once
+          and the warp overwrites tiles their TMA stores may still be reading. The comment
+          "make sure next tile is ready for write" holds only for the first tile.
+Fix:      store_async_read_wait<3 - (2*i + j)>, or store_async_read_wait<0> once before the
+          loads (the fix used).
+Status:   fixed test (patched/thread_memory_tile_tma.test_store.bf16.1.1.1, with TK-3) is
+          RACE-FREE and ACCEPT.
+
+
+TK-7  tcgen05 accumulate test: second MMA re-arms the mbarrier too early (latent hang)
+------------------------------------------------------------------------------------
+Where:    tests/group/mma/tensor/mma.cu, tcgen05_wrapper ACC paths (lines 117-118, 133-134).
+Volta:    with TK-4 and TK-5 fixed, units/group_mma_tensor_mma.bf16.st.mma2_AB is still
+          CHECK-FAILED: barrier epochs (mbarrier phases) EpochViolation on `sem`.
+What:     `run_mma(..., sem); wait(sem, 0); run_mma(..., sem); wait(sem, 1);`, executed by all
+          128 threads. The issuing thread starts the second MMA, whose commit completes phase 1
+          of sem, as soon as it has passed wait(sem, 0) itself. If phase 1 completes before a
+          lagging warp reaches wait(sem, 0), that warp sees parity 0 again and waits for a
+          third phase that never comes: the same parity aliasing as TK-1.
+Fix:      __syncthreads() between wait(sem, 0) and the second run_mma.
+Status:   fixed test (patched/group_mma_tensor_mma.bf16.st.mma2_AB) is RACE-FREE and ACCEPT.
+
+
+TK-8  B300 attention: rescale_finished signalled before every corrector warp waited
+-------------------------------------------------------------------------------------
+Issue:    https://github.com/HazyResearch/ThunderKittens/issues/222 (opened 2026-11-27, [WIP])
+Where:    kernels/attention/bf16_b300_mha_causal/bf16_b300_mha_causal.cu, persistent path lines
+          434-437 (task start) and 478-481 (final normalization), one-task path 541-544 and
+          586-588; kernels/attention/bf16_b300_mha_noncausal/bf16_b300_mha_noncausal.cu lines
+          280-283 and 325-327. Every variant of both kernels.
+What:     corr_arrived[q] (count 4: one arrival per softmax warp) is waited by all 4 corrector
+          warps; then warpgroup::arrive(rescale_finished[q]) arrives from the warpgroup's lane 0
+          only (mbarrier.arrive.release.cta), with no warpgroup::sync between the two. The
+          softmax warpgroup's next corr_arrived arrival waits only on rescale_finished, so it is
+          ordered after warp 0's wait but not after warps 1-3's. A lagging corrector warp can
+          find corr_arrived two phases ahead, wait on the aliased parity, and from then on run
+          one phase behind its warpgroup (it skips a phase, then blocks or desynchronizes the
+          warpgroup's named barriers). The in-loop arrives (causal line 472, non-causal 318)
+          already have the warpgroup::sync and are correct.
+Tools:    SentryWard on the causal persistent kernel (2-SM build, B = 1, S = 512, H = 2;
+          representative branches for the data-dependent rescale): not_wellsynced,
+          issue_not_ordered_before_next_phase: a corrector wait on corr_arrived not ordered
+          before the 4 softmax warps' arrivals of the next phase (generation 1, lines 434-437).
+          With a warpgroup::sync added there only, the same failure moves to generation 5, the
+          final normalization's wait (lines 478-481).
+Fix:      warpgroup::sync(warpgroup::groupid()+1) before each of those warpgroup::arrive calls.
+Status:   with every one of those arrives synchronized, SentryWard's synchronization check passes
+          (B = 1, S = 512, H = 1; its memory check stops at an unresolved Tensor Memory alias,
+          unsupported). The unfixed kernel fails at that size in about 2 minutes.
+
+TK-9  B300 causal attention (persistent): max_vec_smem read after the release that frees it
+-----------------------------------------------------------------------------------------
+Issue:    https://github.com/HazyResearch/ThunderKittens/issues/223 (opened 2026-11-27, [WIP])
+Where:    bf16_b300_mha_causal.cu lines 478-481 (corrector) against line 713 (softmax).
+What:     In the final normalization, all 128 corrector threads read row_sum from
+          max_vec_smem[q][lane] (line 479), then lane 0 alone arrives on rescale_finished (481).
+          Softmax warpgroup 0 of CTA 0 starts its next task by waiting on rescale_finished, and
+          at idx == 0 with m_tile == 0 (t_coord.y == 0) it writes acc_scale into the same
+          max_vec_smem[0][lane] (line 713). The non-causal kernel guards this write with idx > 0.
+          Nothing orders corrector warps 1-3's reads before that write. A lagging warp reads
+          acc_scale (0 on the first block) instead of the row sum: rows 32-127 of the tile are
+          stored unnormalized and their LSE is -inf, silently. It needs a CTA whose second or
+          later task has t_coord.y == 0, which the persistent scheduler produces once B*H*S/256
+          exceeds the 148 SMs (for example B*H = 16, S = 8192).
+Tools:    found by reading the code. TK-8's fix (a warpgroup::sync before line 481) also orders
+          these reads; SentryWard does not reach its memory check without TK-8's fix.
+Fix:      warpgroup::sync before line 481 (TK-8), or guard line 713 with idx > 0 as the
+          non-causal kernel does.
+
+TK-10 B200 GEMMs: remote arrive into a CTA that may have exited
+---------------------------------------------------------------
+Issue:    https://github.com/HazyResearch/ThunderKittens/issues/224 (opened 2026-11-27, [WIP])
+Where:    kernels/gemm/bf16_b200/bf16_b200_gemm.cu lines 137 (producer) and 151 (CLC warp); the
+          same lines in fp8_b200 and int8_b200. Exit gate: lines 248-250.
+What:     When the scheduler's response says no more work, CTA 1's producer and CLC warps
+          still do tma::cluster::arrive(schedule_finished, 0), a remote mbarrier arrive into
+          CTA 0's shared memory, and then exit. Nothing in CTA 0 waits for that phase: its CLC
+          warp breaks out before waiting on schedule_finished again, and its only exit gate is
+          tmem_finished, which CTA 1's epilogue signals, not its producer or CLC warp. So CTA 0
+          can deallocate and exit while CTA 1's producer is still stalled before its arrive,
+          which then writes into the shared memory of a CTA that has exited. The CUDA guide
+          requires all distributed shared memory accesses to finish before a block exits; a
+          cluster barrier at the end, or waiting on the last schedule_finished phase, fixes it.
+          mxfp8_b200 and nvfp4_b200 have no CLC pipeline and are unaffected.
+Tools:    found by reading the code. SentryWard verifies these kernels (all four configurations
+          of each, at 1 and 10 K-steps) but does not model DSMEM accesses after a CTA's exit.
+
+Plausible, not confirmed (production kernels, code reading)
+-----------------------------------------------------------
+- fp8_vr200 (and _fp8out): with M_TILE_COUNT = 1 and N_PAIR_COUNT = 4, which its static_asserts
+  allow but its main() does not instantiate, MMA_PIPE_DEPTH is 2 while outputs_arrived is a
+  single mbarrier: the MMA warp can commit two tasks ahead and the epilogue's parity wait
+  aliases (deadlock). fp8_vr200_gemm.cu lines 29, 151, 206, 236, 259.
+- nvfp4_vr200: CTA 1's last arrive on schedule_finished (lines 215-216, 288) may have the same
+  exit hazard as TK-10; not traced.
+- nvfp4_b200 (line 243), nvfp4_b300 (line 414) and fp8_vr200_fp8out (line 298) read the global
+  scale factors before griddepcontrol.wait under PDL; only the loader warps wait. nvfp4_vr200
+  calls pdl::wait in its consumer first (line 388).
+- Most production kernels exit with TMA stores possibly still reading shared memory (no final
+  store_async_read_wait<0>): the B200 GEMMs, nvfp4_b300, fp8_vr200, nvfp4_vr200 (bf16 out) and
+  the B300 attention kernels. nvfp4_vr200_gemm_fp4out waits (line 519).
+- Library-wide: warpgroup::load_async issues tcgen05.ld and the kernels use the registers
+  before tcgen05.wait::ld; cross-warp Tensor Memory handoffs (alloc then use, ld then the next
+  MMA's overwrite, use then dealloc) mostly lack tcgen05.fence::before/after_thread_sync.
+  Formal violations of the PTX ISA that current hardware tolerates.
+
+Rejected, but not ThunderKittens bugs
+-------------------------------------
+- educational_b200/level_07.n256 and level_08.n256: RACE-CONDITION, WriteWrite on Shared 1024
+  (a_smem[0]) between the first and the fourth K-step's TMA load (4 K-steps over 3 stages).
+  The program does order them: TMA load, then the inputs_arrived wait, the MMA that reads the
+  stage, its tcgen05.commit on inputs_finished, and the producer's wait before the next load.
+  Volta orders each step but does not carry the first load through the commit's completion.
+  This is an open Volta modeling question (happens-before through tracked async ops,
+  volta_findings.txt (a)), not a ThunderKittens race. Both are equal to their GEMM spec.
+- 45 unit tests stop at a read of never-written local memory: the compiler copies a 16-byte
+  aggregate of which 8 bytes were written and overwrites the rest before use. Volta aborts
+  on any such read. This is a Volta gap, not undefined behavior that matters.
+
+Not reached (Volta stops before a verdict)
+------------------------------------------
+- The B200 production GEMMs (bf16, fp8, int8, mxfp8, nvfp4), educational level_09 and the
+  B300 attention kernels run as 2-CTA clusters (cta_group::2, .reqnctapercluster); Volta
+  models one CTA per cluster.
+- rotary: a register-named bar.sync whose thread count varies; layernorm: a generic
+  (space-less) ld in curand's state.
+- The H100 kernels (attention, mamba2, based, hedgehog, linear_attention, flux, fftconv_pc,
+  educational_h100 levels 05-08) use wgmma, which Volta does not model.
+- Unit tests: mma .satfinite (int8), tcgen05.st .16x128b, tcgen05.mma kind::i8, TMA reduce
+  stores, multicast, a bf16x2 exp (packed pair) and fp8 cvt forms.

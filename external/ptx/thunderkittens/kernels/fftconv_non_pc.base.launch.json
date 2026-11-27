@@ -1,0 +1,42 @@
+{
+  "description": "ThunderKittens fftconv_non_pc (kernels/fftconv/fftconv_non_pc.cu): the one-warp FFT convolution, fftconv_template<4, 8, 1024, 4096, 64>, launched as its harness does (B = 4, H = 1024: grid (1, 128), 32 threads, 1000 dynamic shared bytes). Each gl is raw_ptr at 0 then its runtime batch at 8; a cgl is its real then its imaginary gl. Race checked only: the analyzed CTA writes the 64 x 64 tiles of its 4 x 8 (batch, h) slices. Its run peaks near 6 GB: sweep it with --mem-gb 8.",
+  "kernel": "_Z10fftconv_tkI16fftconv_templateILi4ELi8ELi1024ELi4096ELi64EEEvNT_6layout7globalsE",
+  "grid": [1, 128],
+  "block": 32,
+  "dynamic_shared_bytes": 1000,
+  "arrays": [
+    {"name": "u_real", "kind": "in", "dtype": "bf16", "shape": [4, 1024, 64, 64]},
+    {"name": "u_imag", "kind": "in", "dtype": "bf16", "shape": [4, 1024, 64, 64]},
+    {"name": "o", "kind": "out", "dtype": "bf16", "shape": [4, 1024, 64, 64]},
+    {"name": "kf_real", "kind": "in", "dtype": "bf16", "shape": [1024, 64, 64]},
+    {"name": "kf_imag", "kind": "in", "dtype": "bf16", "shape": [1024, 64, 64]},
+    {"name": "f_real", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "f_imag", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "finv_real", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "finv_imag", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "tw_real", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "tw_imag", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "twinv_real", "kind": "in", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "twinv_imag", "kind": "in", "dtype": "bf16", "shape": [64, 64]}
+  ],
+  "params": [
+    {"name": "g", "struct": [
+      {"name": "u_g.real.raw_ptr", "offset": 0, "ptr": "u_real"},
+      {"name": "u_g.real.batch", "offset": 8, "u64": 4},
+      {"name": "u_g.imag.raw_ptr", "offset": 24, "ptr": "u_imag"},
+      {"name": "u_g.imag.batch", "offset": 32, "u64": 4},
+      {"name": "o_real_g.raw_ptr", "offset": 48, "ptr": "o"},
+      {"name": "o_real_g.batch", "offset": 56, "u64": 4},
+      {"name": "kf_g.real.raw_ptr", "offset": 72, "ptr": "kf_real"},
+      {"name": "kf_g.imag.raw_ptr", "offset": 88, "ptr": "kf_imag"},
+      {"name": "f_g.real.raw_ptr", "offset": 104, "ptr": "f_real"},
+      {"name": "f_g.imag.raw_ptr", "offset": 120, "ptr": "f_imag"},
+      {"name": "finv_g.real.raw_ptr", "offset": 136, "ptr": "finv_real"},
+      {"name": "finv_g.imag.raw_ptr", "offset": 152, "ptr": "finv_imag"},
+      {"name": "tw_g.real.raw_ptr", "offset": 168, "ptr": "tw_real"},
+      {"name": "tw_g.imag.raw_ptr", "offset": 184, "ptr": "tw_imag"},
+      {"name": "twinv_g.real.raw_ptr", "offset": 200, "ptr": "twinv_real"},
+      {"name": "twinv_g.imag.raw_ptr", "offset": 216, "ptr": "twinv_imag"}
+    ]}
+  ]
+}
