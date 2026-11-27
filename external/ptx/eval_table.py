@@ -25,6 +25,7 @@ OUTPUT = PTX_ROOT / "output"
 # that likely works on today's hardware; "known" were reported elsewhere first.
 FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or sweep stem) it covers
     "vllm": {"hadacore cp.async race (4c)": ["hadamard_transform_kernel"]},
+    "flashinfer": {"MergeStateInPlace LSE race (4d)": ["MergeStateInPlaceKernel"]},
     "flash-attention": {"split-KV combine out-of-bounds LSE write (4b)": ["splitkv_combine"]},
     "DeepGEMM": {"tcgen05.ld lane-quadrant UB, latent (4)": ["sm100_"]},
     "Gluon": {"missing tcgen05 fences between cross-warp st and mma (1)":
@@ -51,7 +52,7 @@ ROWS = [  # (table row, case registry, race sweep csv)
     ("Gluon", None, "gluon"),
     ("vLLM", "vllm", None),
 ]
-FINDING_KEYS = {"FlashAttention": "flash-attention", "vLLM": "vllm"}
+FINDING_KEYS = {"FlashAttention": "flash-attention", "vLLM": "vllm", "FlashInfer": "flashinfer"}
 # DeepGEMM's three kernels are run by hand from external/ptx/deepgemm/ (no registry yet).
 MANUAL = {"DeepGEMM": {"sm100_bf16_gemm": "ACCEPT", "sm100_fp8_gemm": "VERIFIED",
                        "sm100_mqa_logits": "UNKNOWN"}}
