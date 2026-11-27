@@ -1,0 +1,1630 @@
+{
+  "description": "CUTLASS sm100 block-scaled MXFP8 GEMM (e4m3 x e4m3, UE8M0 scales per 32), 128x128x128 1-SM tile, M = 256, N = 128, K = 256 on one SM: CTA 0 runs both tiles; races only",
+  "kernel": "_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEEENS1_10collective13CollectiveMmaINS1_46MainloopSm100TmaUmmaWarpSpecializedBlockScaledILi6ELi2ELi2ENS5_IJNS4_1CILi1EEESB_SB_EEENS_4arch5Sm100EEENS5_IJNSA_ILi128EEESG_SG_EEENS5_IJNS_12float_e4m3_tENS_13float_ue8m0_tEEEENS5_IJNS5_IJlSB_lEEENS4_6LayoutINS5_IJNS5_IJNS5_IJNSA_ILi32EEENSA_ILi4EEEEEEiEEESQ_NS5_IJSB_iEEEEEENS5_IJNS5_IJNS5_IJNSA_ILi16EEESO_EEEiEEENS5_IJNS5_IJNSA_ILi0EEESB_EEENSA_ILi512EEEEEENS5_IJSW_iEEEEEEEEEEESK_S13_NS4_8TiledMMAINS4_8MMA_AtomIJNS4_21SM100_MMA_MXF8F6F4_SSISI_SI_fSJ_Li128ELi128ELNS4_4UMMA5MajorE0ELS18_0ELNS17_7ScaleInE0ELS19_0EEEEEENSM_ISC_NS5_IJSW_SW_SW_EEEEENS5_IJNS4_10UnderscoreES1E_S1E_EEEEENS5_IJNS4_13SM90_TMA_LOADES1H_EEENS5_IJNS4_14ComposedLayoutINS4_7SwizzleILi3ELi4ELi3EEENS4_18smem_ptr_flag_bitsILi8EEENSM_INS5_IJNSA_ILi8EEESG_EEENS5_IJSG_SB_EEEEEEENSM_INS5_IJNS5_IJNS5_IJSP_SB_EEENS5_IJSN_SB_EEEEEESB_NS5_IJSO_SB_EEEEEENS5_IJNS5_IJNS5_IJSU_SY_EEESX_EEESW_NS5_IJSB_SY_EEEEEEEEEEEvNS4_8identityES1I_S23_vS24_EENS_8epilogue10collective18CollectiveEpilogueINS26_23Sm100TmaWarpSpecializedILi4ELi2ELi32ELb0ELb1EEEJSH_NS5_IJNSM_ISG_SB_EENSM_ISN_SB_EEEEEvSL_NS_10bfloat16_tESL_NS26_6fusion15FusionCallbacksIS2A_NS2F_17LinearCombinationIS2E_fvfLNS_15FloatRoundStyleE2EEESH_S2D_JEEENS4_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES1H_NS1J_INS1K_ILi2ELi4ELi3EEENS1M_ILi16EEENSM_INS5_IJS1O_SN_EEES1U_EEEENS4_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS4_14SM90_TMA_STOREES2T_S2V_S2V_EEENS1_25StaticPersistentSchedulerEvEEEEvNT_6ParamsE",
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "cluster": [
+    1,
+    1,
+    1
+  ],
+  "cta": [
+    0,
+    0,
+    0
+  ],
+  "dynamic_shared_bytes": 220160,
+  "arrays": [
+    {
+      "name": "A",
+      "kind": "in",
+      "dtype": "e4m3",
+      "shape": [
+        256,
+        256
+      ],
+      "base": "0x10000000"
+    },
+    {
+      "name": "B",
+      "kind": "in",
+      "dtype": "e4m3",
+      "shape": [
+        128,
+        256
+      ],
+      "base": "0x20000000"
+    },
+    {
+      "name": "SFA",
+      "kind": "in",
+      "dtype": "u8",
+      "shape": [
+        2048
+      ],
+      "base": "0x30000000"
+    },
+    {
+      "name": "SFB",
+      "kind": "in",
+      "dtype": "u8",
+      "shape": [
+        1024
+      ],
+      "base": "0x40000000"
+    },
+    {
+      "name": "D",
+      "kind": "out",
+      "dtype": "bf16",
+      "shape": [
+        256,
+        128
+      ],
+      "base": "0x50000000"
+    }
+  ],
+  "params": [
+    {
+      "name": "params",
+      "struct": [
+        {
+          "offset": 0,
+          "u32": 0
+        },
+        {
+          "offset": 4,
+          "u32": 256
+        },
+        {
+          "offset": 8,
+          "u32": 128
+        },
+        {
+          "offset": 12,
+          "u32": 256
+        },
+        {
+          "offset": 16,
+          "u32": 1
+        },
+        {
+          "offset": 20,
+          "u32": 0
+        },
+        {
+          "offset": 24,
+          "u32": 780
+        },
+        {
+          "offset": 28,
+          "u32": 0
+        },
+        {
+          "offset": 32,
+          "u32": 792
+        },
+        {
+          "offset": 36,
+          "u32": 0
+        },
+        {
+          "offset": 40,
+          "u32": 65536
+        },
+        {
+          "offset": 44,
+          "u32": 0
+        },
+        {
+          "offset": 48,
+          "u32": 2
+        },
+        {
+          "offset": 52,
+          "u32": 6
+        },
+        {
+          "offset": 56,
+          "u32": 589072
+        },
+        {
+          "offset": 60,
+          "u32": 0
+        },
+        {
+          "offset": 64,
+          "tensor_map": {
+            "array": "A",
+            "dtype": "u8",
+            "dims": [
+              256,
+              256,
+              1
+            ],
+            "strides": [
+              256,
+              0
+            ],
+            "box": [
+              128,
+              128,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 192,
+          "u32": 0
+        },
+        {
+          "offset": 196,
+          "u32": 0
+        },
+        {
+          "offset": 200,
+          "u32": 1
+        },
+        {
+          "offset": 204,
+          "u32": 0
+        },
+        {
+          "offset": 208,
+          "u32": 101
+        },
+        {
+          "offset": 212,
+          "u32": 0
+        },
+        {
+          "offset": 216,
+          "u32": 50
+        },
+        {
+          "offset": 220,
+          "u32": 0
+        },
+        {
+          "offset": 224,
+          "u32": 3800752880
+        },
+        {
+          "offset": 228,
+          "u32": 65535
+        },
+        {
+          "offset": 232,
+          "u32": 1100233716
+        },
+        {
+          "offset": 236,
+          "u32": 61101
+        },
+        {
+          "offset": 240,
+          "u32": 3800753000
+        },
+        {
+          "offset": 244,
+          "u32": 65535
+        },
+        {
+          "offset": 248,
+          "u32": 50
+        },
+        {
+          "offset": 252,
+          "u32": 0
+        },
+        {
+          "offset": 256,
+          "tensor_map": {
+            "array": "B",
+            "dtype": "u8",
+            "dims": [
+              256,
+              128,
+              1
+            ],
+            "strides": [
+              256,
+              0
+            ],
+            "box": [
+              128,
+              128,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 384,
+          "u32": 3593517056
+        },
+        {
+          "offset": 388,
+          "u32": 48857
+        },
+        {
+          "offset": 392,
+          "u32": 3800753016
+        },
+        {
+          "offset": 396,
+          "u32": 65535
+        },
+        {
+          "offset": 400,
+          "u32": 1101654208
+        },
+        {
+          "offset": 404,
+          "u32": 61101
+        },
+        {
+          "offset": 408,
+          "u32": 1098935904
+        },
+        {
+          "offset": 412,
+          "u32": 61101
+        },
+        {
+          "offset": 416,
+          "u32": 1100231968
+        },
+        {
+          "offset": 420,
+          "u32": 61101
+        },
+        {
+          "offset": 424,
+          "u32": 1101531028
+        },
+        {
+          "offset": 428,
+          "u32": 61101
+        },
+        {
+          "offset": 432,
+          "u32": 3800753000
+        },
+        {
+          "offset": 436,
+          "u32": 65535
+        },
+        {
+          "offset": 440,
+          "u32": 51
+        },
+        {
+          "offset": 444,
+          "u32": 0
+        },
+        {
+          "offset": 448,
+          "tensor_map": {
+            "array": "SFA",
+            "dtype": "u16",
+            "dims": [
+              256,
+              2,
+              2,
+              1
+            ],
+            "strides": [
+              1024,
+              512,
+              2048
+            ],
+            "box": [
+              256,
+              1,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "none",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 576,
+          "u32": 3800752128
+        },
+        {
+          "offset": 580,
+          "u32": 65535
+        },
+        {
+          "offset": 584,
+          "u32": 1
+        },
+        {
+          "offset": 588,
+          "u32": 0
+        },
+        {
+          "offset": 592,
+          "u32": 3800752272
+        },
+        {
+          "offset": 596,
+          "u32": 65535
+        },
+        {
+          "offset": 600,
+          "u32": 1101501828
+        },
+        {
+          "offset": 604,
+          "u32": 61101
+        },
+        {
+          "offset": 608,
+          "u32": 1101698456
+        },
+        {
+          "offset": 612,
+          "u32": 61101
+        },
+        {
+          "offset": 616,
+          "u32": 1098998802
+        },
+        {
+          "offset": 620,
+          "u32": 61101
+        },
+        {
+          "offset": 624,
+          "u32": 3800752600
+        },
+        {
+          "offset": 628,
+          "u32": 65535
+        },
+        {
+          "offset": 632,
+          "u32": 0
+        },
+        {
+          "offset": 636,
+          "u32": 0
+        },
+        {
+          "offset": 640,
+          "tensor_map": {
+            "array": "SFB",
+            "dtype": "u16",
+            "dims": [
+              256,
+              1,
+              2,
+              1
+            ],
+            "strides": [
+              1024,
+              512,
+              1024
+            ],
+            "box": [
+              256,
+              1,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "none",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 768,
+          "u32": 0
+        },
+        {
+          "offset": 772,
+          "u32": 0
+        },
+        {
+          "offset": 776,
+          "u32": 0
+        },
+        {
+          "offset": 780,
+          "u32": 0
+        },
+        {
+          "offset": 784,
+          "u32": 0
+        },
+        {
+          "offset": 788,
+          "u32": 0
+        },
+        {
+          "offset": 792,
+          "u32": 0
+        },
+        {
+          "offset": 796,
+          "u32": 0
+        },
+        {
+          "offset": 800,
+          "u32": 3800751936
+        },
+        {
+          "offset": 804,
+          "u32": 65535
+        },
+        {
+          "offset": 808,
+          "u32": 1101499760
+        },
+        {
+          "offset": 812,
+          "u32": 61101
+        },
+        {
+          "offset": 816,
+          "u32": 1098971569
+        },
+        {
+          "offset": 820,
+          "u32": 61101
+        },
+        {
+          "offset": 824,
+          "u32": 1101721600
+        },
+        {
+          "offset": 828,
+          "u32": 61101
+        },
+        {
+          "offset": 832,
+          "tensor_map": {
+            "array": "A",
+            "dtype": "u8",
+            "dims": [
+              256,
+              256,
+              1
+            ],
+            "strides": [
+              256,
+              0
+            ],
+            "box": [
+              128,
+              128,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 960,
+          "u32": 0
+        },
+        {
+          "offset": 964,
+          "u32": 0
+        },
+        {
+          "offset": 968,
+          "u32": 1101698456
+        },
+        {
+          "offset": 972,
+          "u32": 61101
+        },
+        {
+          "offset": 976,
+          "u32": 1101725696
+        },
+        {
+          "offset": 980,
+          "u32": 61101
+        },
+        {
+          "offset": 984,
+          "u32": 1099415688
+        },
+        {
+          "offset": 988,
+          "u32": 61101
+        },
+        {
+          "offset": 992,
+          "u32": 1101654208
+        },
+        {
+          "offset": 996,
+          "u32": 61101
+        },
+        {
+          "offset": 1000,
+          "u32": 3800753312
+        },
+        {
+          "offset": 1004,
+          "u32": 65535
+        },
+        {
+          "offset": 1008,
+          "u32": 1101656064
+        },
+        {
+          "offset": 1012,
+          "u32": 61101
+        },
+        {
+          "offset": 1016,
+          "u32": 3800756624
+        },
+        {
+          "offset": 1020,
+          "u32": 65535
+        },
+        {
+          "offset": 1024,
+          "tensor_map": {
+            "array": "B",
+            "dtype": "u8",
+            "dims": [
+              256,
+              128,
+              1
+            ],
+            "strides": [
+              256,
+              0
+            ],
+            "box": [
+              128,
+              128,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 1152,
+          "u32": 0
+        },
+        {
+          "offset": 1156,
+          "u32": 0
+        },
+        {
+          "offset": 1160,
+          "u32": 37
+        },
+        {
+          "offset": 1164,
+          "u32": 65535
+        },
+        {
+          "offset": 1168,
+          "u32": 1098965085
+        },
+        {
+          "offset": 1172,
+          "u32": 61101
+        },
+        {
+          "offset": 1176,
+          "u32": 1
+        },
+        {
+          "offset": 1180,
+          "u32": 61101
+        },
+        {
+          "offset": 1184,
+          "u32": 1
+        },
+        {
+          "offset": 1188,
+          "u32": 0
+        },
+        {
+          "offset": 1192,
+          "u32": 0
+        },
+        {
+          "offset": 1196,
+          "u32": 0
+        },
+        {
+          "offset": 1200,
+          "u32": 1
+        },
+        {
+          "offset": 1204,
+          "u32": 61101
+        },
+        {
+          "offset": 1208,
+          "u32": 0
+        },
+        {
+          "offset": 1212,
+          "u32": 0
+        },
+        {
+          "offset": 1216,
+          "tensor_map": {
+            "array": "SFA",
+            "dtype": "u16",
+            "dims": [
+              256,
+              2,
+              2,
+              1
+            ],
+            "strides": [
+              1024,
+              512,
+              2048
+            ],
+            "box": [
+              256,
+              1,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "none",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 1344,
+          "u32": 0
+        },
+        {
+          "offset": 1348,
+          "u32": 0
+        },
+        {
+          "offset": 1352,
+          "u32": 0
+        },
+        {
+          "offset": 1356,
+          "u32": 0
+        },
+        {
+          "offset": 1360,
+          "u32": 0
+        },
+        {
+          "offset": 1364,
+          "u32": 0
+        },
+        {
+          "offset": 1368,
+          "u32": 0
+        },
+        {
+          "offset": 1372,
+          "u32": 0
+        },
+        {
+          "offset": 1376,
+          "u32": 0
+        },
+        {
+          "offset": 1380,
+          "u32": 0
+        },
+        {
+          "offset": 1384,
+          "u32": 0
+        },
+        {
+          "offset": 1388,
+          "u32": 0
+        },
+        {
+          "offset": 1392,
+          "u32": 0
+        },
+        {
+          "offset": 1396,
+          "u32": 0
+        },
+        {
+          "offset": 1400,
+          "u32": 0
+        },
+        {
+          "offset": 1404,
+          "u32": 0
+        },
+        {
+          "offset": 1408,
+          "tensor_map": {
+            "array": "SFB",
+            "dtype": "u16",
+            "dims": [
+              256,
+              1,
+              2,
+              1
+            ],
+            "strides": [
+              1024,
+              512,
+              1024
+            ],
+            "box": [
+              256,
+              1,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "none",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 1536,
+          "u32": 0
+        },
+        {
+          "offset": 1540,
+          "u32": 0
+        },
+        {
+          "offset": 1544,
+          "u32": 0
+        },
+        {
+          "offset": 1548,
+          "u32": 0
+        },
+        {
+          "offset": 1552,
+          "u32": 0
+        },
+        {
+          "offset": 1556,
+          "u32": 0
+        },
+        {
+          "offset": 1560,
+          "u32": 0
+        },
+        {
+          "offset": 1564,
+          "u32": 0
+        },
+        {
+          "offset": 1568,
+          "u32": 0
+        },
+        {
+          "offset": 1572,
+          "u32": 0
+        },
+        {
+          "offset": 1576,
+          "u32": 0
+        },
+        {
+          "offset": 1580,
+          "u32": 0
+        },
+        {
+          "offset": 1584,
+          "u32": 0
+        },
+        {
+          "offset": 1588,
+          "u32": 0
+        },
+        {
+          "offset": 1592,
+          "u32": 0
+        },
+        {
+          "offset": 1596,
+          "u32": 0
+        },
+        {
+          "offset": 1600,
+          "u32": 2
+        },
+        {
+          "offset": 1604,
+          "u32": 2
+        },
+        {
+          "offset": 1608,
+          "u32": 1
+        },
+        {
+          "offset": 1612,
+          "u32": 1024
+        },
+        {
+          "offset": 1616,
+          "u32": 2048
+        },
+        {
+          "offset": 1620,
+          "u32": 1
+        },
+        {
+          "offset": 1624,
+          "u32": 2
+        },
+        {
+          "offset": 1628,
+          "u32": 1
+        },
+        {
+          "offset": 1632,
+          "u32": 1024
+        },
+        {
+          "offset": 1636,
+          "u32": 1024
+        },
+        {
+          "offset": 1640,
+          "u32": 0
+        },
+        {
+          "offset": 1644,
+          "u32": 0
+        },
+        {
+          "offset": 1648,
+          "u32": 0
+        },
+        {
+          "offset": 1652,
+          "u32": 61101
+        },
+        {
+          "offset": 1656,
+          "u32": 0
+        },
+        {
+          "offset": 1660,
+          "u32": 0
+        },
+        {
+          "offset": 1664,
+          "u32": 0
+        },
+        {
+          "offset": 1668,
+          "u32": 0
+        },
+        {
+          "offset": 1672,
+          "u32": 3800755576
+        },
+        {
+          "offset": 1676,
+          "u32": 65535
+        },
+        {
+          "offset": 1680,
+          "u32": 3800755440
+        },
+        {
+          "offset": 1684,
+          "u32": 65535
+        },
+        {
+          "offset": 1688,
+          "u32": 1101499760
+        },
+        {
+          "offset": 1692,
+          "u32": 61101
+        },
+        {
+          "offset": 1696,
+          "u32": 1101465673
+        },
+        {
+          "offset": 1700,
+          "u32": 61101
+        },
+        {
+          "offset": 1704,
+          "u32": 1101721600
+        },
+        {
+          "offset": 1708,
+          "u32": 61101
+        },
+        {
+          "offset": 1712,
+          "u32": 1101465384
+        },
+        {
+          "offset": 1716,
+          "u32": 61101
+        },
+        {
+          "offset": 1720,
+          "u32": 1101464400
+        },
+        {
+          "offset": 1724,
+          "u32": 61101
+        },
+        {
+          "offset": 1728,
+          "u32": 0
+        },
+        {
+          "offset": 1732,
+          "u32": 65535
+        },
+        {
+          "offset": 1736,
+          "u32": 0
+        },
+        {
+          "offset": 1740,
+          "u32": 0
+        },
+        {
+          "offset": 1744,
+          "u32": 0
+        },
+        {
+          "offset": 1748,
+          "u32": 0
+        },
+        {
+          "offset": 1752,
+          "u32": 3800755656
+        },
+        {
+          "offset": 1756,
+          "u32": 65535
+        },
+        {
+          "offset": 1760,
+          "u32": 1065353216
+        },
+        {
+          "offset": 1764,
+          "u32": 65535
+        },
+        {
+          "offset": 1768,
+          "u32": 0
+        },
+        {
+          "offset": 1772,
+          "u32": 0
+        },
+        {
+          "offset": 1776,
+          "u32": 0
+        },
+        {
+          "offset": 1780,
+          "u32": 0
+        },
+        {
+          "offset": 1784,
+          "u32": 1101501828
+        },
+        {
+          "offset": 1788,
+          "u32": 61101
+        },
+        {
+          "offset": 1792,
+          "u32": 1101731576
+        },
+        {
+          "offset": 1796,
+          "u32": 61101
+        },
+        {
+          "offset": 1800,
+          "u32": 1101465673
+        },
+        {
+          "offset": 1804,
+          "u32": 61101
+        },
+        {
+          "offset": 1808,
+          "u32": 3800756176
+        },
+        {
+          "offset": 1812,
+          "u32": 65535
+        },
+        {
+          "offset": 1816,
+          "u32": 0
+        },
+        {
+          "offset": 1820,
+          "u32": 0
+        },
+        {
+          "offset": 1824,
+          "u32": 1101675248
+        },
+        {
+          "offset": 1828,
+          "u32": 61101
+        },
+        {
+          "offset": 1832,
+          "u32": 9
+        },
+        {
+          "offset": 1836,
+          "u32": 0
+        },
+        {
+          "offset": 1840,
+          "u32": 1101728584
+        },
+        {
+          "offset": 1844,
+          "u32": 61101
+        },
+        {
+          "offset": 1848,
+          "u32": 1
+        },
+        {
+          "offset": 1852,
+          "u32": 0
+        },
+        {
+          "offset": 1856,
+          "u32": 0
+        },
+        {
+          "offset": 1860,
+          "u32": 0
+        },
+        {
+          "offset": 1864,
+          "u32": 0
+        },
+        {
+          "offset": 1868,
+          "u32": 0
+        },
+        {
+          "offset": 1872,
+          "u32": 0
+        },
+        {
+          "offset": 1876,
+          "u32": 0
+        },
+        {
+          "offset": 1880,
+          "u32": 0
+        },
+        {
+          "offset": 1884,
+          "u32": 0
+        },
+        {
+          "offset": 1888,
+          "u32": 0
+        },
+        {
+          "offset": 1892,
+          "u32": 0
+        },
+        {
+          "offset": 1896,
+          "u32": 0
+        },
+        {
+          "offset": 1900,
+          "u32": 0
+        },
+        {
+          "offset": 1904,
+          "u32": 0
+        },
+        {
+          "offset": 1908,
+          "u32": 0
+        },
+        {
+          "offset": 1912,
+          "u32": 0
+        },
+        {
+          "offset": 1916,
+          "u32": 0
+        },
+        {
+          "offset": 1920,
+          "u32": 0
+        },
+        {
+          "offset": 1924,
+          "u32": 0
+        },
+        {
+          "offset": 1928,
+          "u32": 0
+        },
+        {
+          "offset": 1932,
+          "u32": 0
+        },
+        {
+          "offset": 1936,
+          "u32": 0
+        },
+        {
+          "offset": 1940,
+          "u32": 0
+        },
+        {
+          "offset": 1944,
+          "u32": 0
+        },
+        {
+          "offset": 1948,
+          "u32": 0
+        },
+        {
+          "offset": 1952,
+          "u32": 0
+        },
+        {
+          "offset": 1956,
+          "u32": 0
+        },
+        {
+          "offset": 1960,
+          "u32": 0
+        },
+        {
+          "offset": 1964,
+          "u32": 0
+        },
+        {
+          "offset": 1968,
+          "u32": 0
+        },
+        {
+          "offset": 1972,
+          "u32": 0
+        },
+        {
+          "offset": 1976,
+          "u32": 0
+        },
+        {
+          "offset": 1980,
+          "u32": 0
+        },
+        {
+          "offset": 1984,
+          "u32": 0
+        },
+        {
+          "offset": 1988,
+          "u32": 0
+        },
+        {
+          "offset": 1992,
+          "u32": 0
+        },
+        {
+          "offset": 1996,
+          "u32": 0
+        },
+        {
+          "offset": 2000,
+          "u32": 0
+        },
+        {
+          "offset": 2004,
+          "u32": 0
+        },
+        {
+          "offset": 2008,
+          "u32": 0
+        },
+        {
+          "offset": 2012,
+          "u32": 0
+        },
+        {
+          "offset": 2016,
+          "u32": 0
+        },
+        {
+          "offset": 2020,
+          "u32": 0
+        },
+        {
+          "offset": 2024,
+          "u32": 0
+        },
+        {
+          "offset": 2028,
+          "u32": 0
+        },
+        {
+          "offset": 2032,
+          "u32": 0
+        },
+        {
+          "offset": 2036,
+          "u32": 0
+        },
+        {
+          "offset": 2040,
+          "u32": 0
+        },
+        {
+          "offset": 2044,
+          "u32": 0
+        },
+        {
+          "offset": 2048,
+          "tensor_map": {
+            "array": "D",
+            "dtype": "bf16",
+            "dims": [
+              128,
+              256,
+              1
+            ],
+            "strides": [
+              256,
+              0
+            ],
+            "box": [
+              32,
+              128,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1
+            ],
+            "swizzle": "64B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 2176,
+          "u32": 1096693078
+        },
+        {
+          "offset": 2180,
+          "u32": 61101
+        },
+        {
+          "offset": 2184,
+          "u32": 1101501828
+        },
+        {
+          "offset": 2188,
+          "u32": 61101
+        },
+        {
+          "offset": 2192,
+          "u32": 1101700240
+        },
+        {
+          "offset": 2196,
+          "u32": 61101
+        },
+        {
+          "offset": 2200,
+          "u32": 3800756488
+        },
+        {
+          "offset": 2204,
+          "u32": 65535
+        },
+        {
+          "offset": 2208,
+          "u32": 3800756484
+        },
+        {
+          "offset": 2212,
+          "u32": 65535
+        },
+        {
+          "offset": 2216,
+          "u32": 0
+        },
+        {
+          "offset": 2220,
+          "u32": 0
+        },
+        {
+          "offset": 2224,
+          "u32": 3800756528
+        },
+        {
+          "offset": 2228,
+          "u32": 65535
+        },
+        {
+          "offset": 2232,
+          "u32": 1101501828
+        },
+        {
+          "offset": 2236,
+          "u32": 61101
+        },
+        {
+          "offset": 2240,
+          "u32": 1
+        },
+        {
+          "offset": 2244,
+          "u32": 0
+        },
+        {
+          "offset": 2248,
+          "u32": 0
+        },
+        {
+          "offset": 2252,
+          "u32": 61101
+        },
+        {
+          "offset": 2256,
+          "u32": 1
+        },
+        {
+          "offset": 2260,
+          "u32": 0
+        },
+        {
+          "offset": 2264,
+          "u32": 0
+        },
+        {
+          "offset": 2268,
+          "u32": 61101
+        },
+        {
+          "offset": 2272,
+          "u32": 2
+        },
+        {
+          "offset": 2276,
+          "u32": 0
+        },
+        {
+          "offset": 2280,
+          "u32": 0
+        },
+        {
+          "offset": 2284,
+          "u32": 0
+        },
+        {
+          "offset": 2288,
+          "u32": 1
+        },
+        {
+          "offset": 2292,
+          "u32": 0
+        },
+        {
+          "offset": 2296,
+          "u32": 1
+        },
+        {
+          "offset": 2300,
+          "u32": 0
+        },
+        {
+          "offset": 2304,
+          "u32": 0
+        },
+        {
+          "offset": 2308,
+          "u32": 0
+        },
+        {
+          "offset": 2312,
+          "u32": 0
+        },
+        {
+          "offset": 2316,
+          "u32": 0
+        },
+        {
+          "offset": 2320,
+          "u32": 2
+        },
+        {
+          "offset": 2324,
+          "u32": 0
+        },
+        {
+          "offset": 2328,
+          "u32": 0
+        },
+        {
+          "offset": 2332,
+          "u32": 1
+        },
+        {
+          "offset": 2336,
+          "u32": 2
+        },
+        {
+          "offset": 2340,
+          "u32": 1
+        },
+        {
+          "offset": 2344,
+          "u32": 1
+        },
+        {
+          "offset": 2348,
+          "u32": 1
+        },
+        {
+          "offset": 2352,
+          "u32": 1
+        },
+        {
+          "offset": 2356,
+          "u32": 65535
+        },
+        {
+          "offset": 2360,
+          "u32": 0
+        },
+        {
+          "offset": 2364,
+          "u32": 1
+        },
+        {
+          "offset": 2368,
+          "u32": 0
+        },
+        {
+          "offset": 2372,
+          "u32": 0
+        },
+        {
+          "offset": 2376,
+          "u32": 0
+        },
+        {
+          "offset": 2380,
+          "u32": 0
+        },
+        {
+          "offset": 2384,
+          "u32": 0
+        },
+        {
+          "offset": 2388,
+          "u32": 0
+        },
+        {
+          "offset": 2392,
+          "u32": 0
+        },
+        {
+          "offset": 2396,
+          "u32": 61101
+        },
+        {
+          "offset": 2400,
+          "u32": 1
+        },
+        {
+          "offset": 2404,
+          "u32": 0
+        },
+        {
+          "offset": 2408,
+          "u32": 6
+        },
+        {
+          "offset": 2412,
+          "u32": 0
+        },
+        {
+          "offset": 2416,
+          "u32": 3800756176
+        },
+        {
+          "offset": 2420,
+          "u32": 65535
+        },
+        {
+          "offset": 2424,
+          "u32": 1101499760
+        },
+        {
+          "offset": 2428,
+          "u32": 61101
+        }
+      ]
+    }
+  ]
+}

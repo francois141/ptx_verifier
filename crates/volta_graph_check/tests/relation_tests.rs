@@ -158,10 +158,11 @@ fn an_async_effect_is_ordered_only_through_its_observed_completion() {
     assert!(!in_hb(&g, effect, bystander));
 }
 
+/// Every query reads only joins earlier in the trace, so a pass validates them by induction.
 #[test]
-fn g0_excludes_the_completion_joins_of_mbarrier_phases() {
+fn g0_keeps_the_completion_joins_of_mbarrier_phases() {
     let (g, effect, [_, waiter_after, _]) = async_write_observed_by(1);
-    assert!(!in_g0(&g, effect, waiter_after));
+    assert!(in_g0(&g, effect, waiter_after));
     assert!(in_hb(&g, effect, waiter_after));
 }
 

@@ -1,0 +1,430 @@
+{
+  "description": "CUTLASS 2.x SGEMM (example 00's default SIMT config), f32, M = N = 128, K = 64: one tile",
+  "kernel": "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINS_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1ELb0ENSD_9NoPermuteEEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSM_Li0ESI_Li1ELb0ESJ_EENSL_ISQ_fSE_Li0ESO_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSM_fSE_fSE_NSU_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS13_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi4EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2ENS8_6thread14UnaryTransform8IdentityEEES1D_bEENS_8epilogue11threadblock8EpilogueIS7_S14_Li1ENS1G_22PredicatedTileIteratorINS1G_26OutputTileOptimalThreadMapINS1G_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1K_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfLb0ESJ_Lb0EEENS1F_4warp20FragmentIteratorSimtISW_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSM_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S12_EENS1P_16TileIteratorSimtISW_S1W_fSE_S12_EENS1G_18SharedLoadIteratorINS1N_18CompactedThreadMapEfLi4EEENS1F_6thread17LinearCombinationIfLi1EffLNS23_9ScaleType4KindE0ELS19_2EfEENSB_ILi0ELi17EEELi1ELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE",
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "cluster": [
+    1,
+    1,
+    1
+  ],
+  "cta": [
+    0,
+    0,
+    0
+  ],
+  "dynamic_shared_bytes": 16896,
+  "arrays": [
+    {
+      "name": "A",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        128,
+        64
+      ],
+      "base": "0x10000000"
+    },
+    {
+      "name": "B",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        128,
+        64
+      ],
+      "base": "0x20000000"
+    },
+    {
+      "name": "D",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        128,
+        128
+      ],
+      "base": "0x30000000"
+    }
+  ],
+  "params": [
+    {
+      "name": "params",
+      "struct": [
+        {
+          "offset": 0,
+          "u32": 128
+        },
+        {
+          "offset": 4,
+          "u32": 128
+        },
+        {
+          "offset": 8,
+          "u32": 64
+        },
+        {
+          "offset": 12,
+          "u32": 1
+        },
+        {
+          "offset": 16,
+          "u32": 1
+        },
+        {
+          "offset": 20,
+          "u32": 1
+        },
+        {
+          "offset": 24,
+          "u32": 0
+        },
+        {
+          "offset": 28,
+          "u32": 0
+        },
+        {
+          "offset": 32,
+          "u32": 64
+        },
+        {
+          "offset": 36,
+          "u32": 0
+        },
+        {
+          "offset": 40,
+          "u32": 8192
+        },
+        {
+          "offset": 44,
+          "u32": 0
+        },
+        {
+          "offset": 48,
+          "u32": 4294942752
+        },
+        {
+          "offset": 52,
+          "u32": 4294967295
+        },
+        {
+          "offset": 56,
+          "u32": 32
+        },
+        {
+          "offset": 60,
+          "u32": 0
+        },
+        {
+          "offset": 64,
+          "ptr": "A"
+        },
+        {
+          "offset": 72,
+          "u32": 64
+        },
+        {
+          "offset": 76,
+          "u32": 0
+        },
+        {
+          "offset": 80,
+          "u32": 64
+        },
+        {
+          "offset": 84,
+          "u32": 0
+        },
+        {
+          "offset": 88,
+          "u32": 8192
+        },
+        {
+          "offset": 92,
+          "u32": 0
+        },
+        {
+          "offset": 96,
+          "u32": 4294942752
+        },
+        {
+          "offset": 100,
+          "u32": 4294967295
+        },
+        {
+          "offset": 104,
+          "u32": 32
+        },
+        {
+          "offset": 108,
+          "u32": 0
+        },
+        {
+          "offset": 112,
+          "ptr": "B"
+        },
+        {
+          "offset": 120,
+          "u32": 64
+        },
+        {
+          "offset": 124,
+          "u32": 0
+        },
+        {
+          "offset": 128,
+          "u32": 512
+        },
+        {
+          "offset": 132,
+          "u32": 0
+        },
+        {
+          "offset": 136,
+          "u32": 512
+        },
+        {
+          "offset": 140,
+          "u32": 0
+        },
+        {
+          "offset": 144,
+          "u32": 4096
+        },
+        {
+          "offset": 148,
+          "u32": 0
+        },
+        {
+          "offset": 152,
+          "u32": 4294963712
+        },
+        {
+          "offset": 156,
+          "u32": 4294967295
+        },
+        {
+          "offset": 160,
+          "u32": 512
+        },
+        {
+          "offset": 164,
+          "u32": 0
+        },
+        {
+          "offset": 168,
+          "u32": 6144
+        },
+        {
+          "offset": 172,
+          "u32": 0
+        },
+        {
+          "offset": 176,
+          "u32": 16384
+        },
+        {
+          "offset": 180,
+          "u32": 0
+        },
+        {
+          "offset": 184,
+          "u32": 8192
+        },
+        {
+          "offset": 188,
+          "u32": 0
+        },
+        {
+          "offset": 192,
+          "u32": 0
+        },
+        {
+          "offset": 196,
+          "u32": 0
+        },
+        {
+          "offset": 200,
+          "u32": 128
+        },
+        {
+          "offset": 204,
+          "u32": 0
+        },
+        {
+          "offset": 208,
+          "u32": 512
+        },
+        {
+          "offset": 212,
+          "u32": 0
+        },
+        {
+          "offset": 216,
+          "u32": 512
+        },
+        {
+          "offset": 220,
+          "u32": 0
+        },
+        {
+          "offset": 224,
+          "u32": 4096
+        },
+        {
+          "offset": 228,
+          "u32": 0
+        },
+        {
+          "offset": 232,
+          "u32": 4294963712
+        },
+        {
+          "offset": 236,
+          "u32": 4294967295
+        },
+        {
+          "offset": 240,
+          "u32": 512
+        },
+        {
+          "offset": 244,
+          "u32": 0
+        },
+        {
+          "offset": 248,
+          "u32": 6144
+        },
+        {
+          "offset": 252,
+          "u32": 0
+        },
+        {
+          "offset": 256,
+          "u32": 16384
+        },
+        {
+          "offset": 260,
+          "u32": 0
+        },
+        {
+          "offset": 264,
+          "u32": 8192
+        },
+        {
+          "offset": 268,
+          "u32": 0
+        },
+        {
+          "offset": 272,
+          "ptr": "D"
+        },
+        {
+          "offset": 280,
+          "u32": 128
+        },
+        {
+          "offset": 284,
+          "u32": 0
+        },
+        {
+          "offset": 288,
+          "u32": 1065353216
+        },
+        {
+          "offset": 292,
+          "u32": 0
+        },
+        {
+          "offset": 296,
+          "u32": 0
+        },
+        {
+          "offset": 300,
+          "u32": 0
+        },
+        {
+          "offset": 304,
+          "u32": 0
+        },
+        {
+          "offset": 308,
+          "u32": 0
+        },
+        {
+          "offset": 312,
+          "u32": 0
+        },
+        {
+          "offset": 316,
+          "u32": 0
+        },
+        {
+          "offset": 320,
+          "u32": 0
+        },
+        {
+          "offset": 324,
+          "u32": 0
+        },
+        {
+          "offset": 328,
+          "u32": 0
+        },
+        {
+          "offset": 332,
+          "u32": 0
+        },
+        {
+          "offset": 336,
+          "u32": 64
+        },
+        {
+          "offset": 340,
+          "u32": 65535
+        },
+        {
+          "offset": 344,
+          "u32": 0
+        },
+        {
+          "offset": 348,
+          "u32": 0
+        },
+        {
+          "offset": 352,
+          "u32": 0
+        },
+        {
+          "offset": 356,
+          "u32": 0
+        },
+        {
+          "offset": 360,
+          "u32": 0
+        },
+        {
+          "offset": 364,
+          "u32": 0
+        }
+      ]
+    }
+  ],
+  "spec": "specs/gemm_tn_tile.spec",
+  "dims": {
+    "K": 64,
+    "M": 128,
+    "M0": 0,
+    "M1": 128,
+    "N": 128,
+    "N0": 0,
+    "N1": 128
+  }
+}

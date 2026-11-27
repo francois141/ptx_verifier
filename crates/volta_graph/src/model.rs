@@ -341,8 +341,8 @@ pub enum MemberOrdering {
     /// `bar.warp.sync`, which "guarantee[s] memory ordering among threads participating in
     /// barrier" (PTX ISA 9.7.15.2): each member's contribution joins.
     Synchronizing,
-    /// Every other collective (`shfl.sync`, `ldmatrix`, `tcgen05.alloc`, ...): the members
-    /// only wait for each other, so their contributions join nothing.
+    /// Every other collective (`shfl.sync`, `elect.sync`, `ldmatrix`, ...): the members only
+    /// wait for each other, so their contributions order execution but no memory.
     ExecutionOnly,
 }
 

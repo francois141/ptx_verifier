@@ -45,9 +45,10 @@ OUTPUT_DIR = EXTERNAL_ROOT / "output"
 VOLTA = REPO_ROOT / "target" / "release" / "volta"
 
 # TritonBench-G (`extraction/tritonbench.py`), ThunderKittens' educational GEMMs (`extraction/thunderkittens.py`),
-# Triton's Gluon tutorials (`extraction/gluon.py`), TileLang's examples (`extraction/tilelang_kernels.py`) and
-# the AI compiler's PTX for PTX Gym's operators (`extraction/ai_compiler.py`).
-FRAMEWORKS = ("tritonbench", "thunderkittens", "gluon", "tilelang", "ai_compiler")
+# Triton's Gluon tutorials (`extraction/gluon.py`), TileLang's examples (`extraction/tilelang_kernels.py`),
+# the AI compiler's PTX for PTX Gym's operators (`extraction/ai_compiler.py`) and CUTLASS's kernel
+# configurations (`extraction/cutlass.py`).
+FRAMEWORKS = ("tritonbench", "thunderkittens", "gluon", "tilelang", "ai_compiler", "cutlass")
 
 
 class Outcome(enum.Enum):

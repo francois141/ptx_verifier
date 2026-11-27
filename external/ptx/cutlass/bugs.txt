@@ -1,0 +1,93 @@
+CUTLASS issues found with Volta
+===============================
+
+Sources: CUTLASS at 5c179ede (main, 2026-11-25; external/ptx/sources/frameworks.txt), fetched
+into target/ptx-sources/cutlass by external/ptx/extraction/fetch_sources.py. Each unit in
+external/ptx/cutlass/units/ instantiates one kernel configuration, builds its launch with
+CUTLASS's own host code and compiles for sm_100a (nvcc 12.9) by
+external/ptx/extraction/cutlass.py. Verdicts are in external/ptx/output/cutlass.csv:
+
+    uv run external/ptx/extraction/cutlass.py              # the 30 units
+    uv run external/ptx/extraction/cutlass.py --patched    # the controls (FIXES), in patched/
+    python3 external/ptx/races.py --framework cutlass
+
+Volta treats floats as exact reals, so nothing below is a rounding difference. Every SM100
+unit runs on one persistent CTA (sm_count 1) unless it says otherwise, so CTA 0 runs every
+tile, the stage ring wraps and the TMEM accumulators are reused.
+
+Part 1 is the issue Volta reports. Part 2 lists the units Volta cannot check yet, with what
+stops each. Part 3 records the Volta changes the SM100 kernels needed.
+
+
+1. Reported by Volta
+--------------------
+
+CL-1  SM100 (and SM90) TMA epilogues: every lane of the storing warp issues the same TMA store
+      (benign race; redundant stores)
+Where:    include/cutlass/epilogue/collective/sm100_epilogue_tma_warpspecialized.hpp:740 and
+          :1100, `bool issue_tma_store = warp_idx == 0;` (comment: "one warp issues TMA
+          store"); the same predicate in sm90_epilogue_tma_warpspecialized.hpp:714,
+          sm100_epilogue_array_tma_warpspecialized.hpp:1175 and the two planar-complex SM100
+          epilogues. Unchanged on CUTLASS main as of 2026-11-27.
+Volta:    14 units RACE-CONDITION, memory-conflict freedom: WriteWrite on D's first bytes
+          between two `cp.async.bulk.tensor.3d.global.shared::cta.bulk_group` stores of the
+          same subtile, issued by two lanes of epilogue warp 0 (threads 128-159):
+          gemm_bf16_tn_128x128, gemm_bf16_nt_128x128, gemm_f16_nn_128x128,
+          gemm_bf16_tn_colmajor_d, gemm_bf16_tn_64x128, gemm_f16_tn_128x256_f32,
+          gemm_e4m3_tn_128x128_bf16, gemm_bf16_tn_2stage, gemm_bf16_tn_batched,
+          gemm_bf16_tn_clc, gemm_f16_tn_raster_m_swizzle2, gemm_bf16_tn_relu,
+          gemm_bf16_tn_silu, gemm_bf16_tn_gelu.
+What:     The store predicate selects the whole warp, and CuTe's SM90_TMA_STORE copy elects
+          no lane (cute/arch/copy_sm90_tma.hpp: one `cp.async.bulk.tensor` per calling
+          thread). So each of the warp's 32 lanes issues a TMA store of the same shared-memory
+          subtile to the same global box, commits its own bulk group and waits for its own
+          reads. The 32 stores write equal bytes, so the output is correct: a formal
+          write-write race of equal values (Volta has no equal-store exception), and 32 TMA
+          store operations per subtile where one suffices. In gemm_bf16_tn_128x128, D's
+          128 x 128 tiles are stored as four 128 x 32 subtiles, each 32 times (op a43, a45,
+          ... by t128, t129, ...). Whether the TMA unit merges the duplicates is undocumented;
+          we have not measured it on hardware.
+Fix:      elect one lane, as the array epilogue's other store path already does
+          (sm100_epilogue_array_tma_warpspecialized.hpp:808, "a single thread from one warp
+          issues TMA store"): `bool issue_tma_store = (warp_idx == 0) && cute::elect_one_sync();`
+Status:   the fix (cutlass.py FIXES, built into patched/) makes every graph check pass on all
+          14 units; 12 are also proved equal to their specs (ACCEPT), gemm_bf16_tn_gelu has no
+          spec (VERIFIED), and gemm_bf16_tn_silu's equivalence stays undecided (its graph
+          VERIFIED). Reported upstream as NVIDIA/cutlass#3946 (2026-11-27).
+
+
+2. Units Volta cannot check yet
+-------------------------------
+
+V-1   gemm_bf16_tn_beta, gemm_bf16_tn_col_bias, gemm_bf16_tn_row_bias_relu: ERROR, "value kind
+      mismatch (packed pair used as a scalar)" in the epilogue's C or bias fusion.
+V-2   sm80_f16_tensorop, sm80_f16_batched, sm80_sgemm_simt, sm80_tf32_tensorop,
+      gemm_bf16_tn_cpasync: UNSUPPORTED, a generic (spaceless) `ld`/`st`.
+V-3   gemm_bf16_tn_nosmem, gemm_e4m3_blockwise: UNSUPPORTED, a TMA into shared memory off the
+      1024-byte swizzle boundary (nonzero swizzle base offset).
+V-4   gemm_tf32_tn_128x128: UNSUPPORTED, `tcgen05.mma.kind::tf32`.
+V-5   gemm_mxfp8_blockscaled: UNSUPPORTED, block-scaled MMA scale factors at a TMEM lane offset.
+V-6   gemm_bf16_tn_streamk: UNSUPPORTED, an untyped `ld` the parser rejects.
+V-7   fmha_fwd_f16_d128: UNSUPPORTED, `cvta.local`.
+V-8   conv2d_fprop_f16: UNSUPPORTED, the `.im2col_no_offs` TMA store form.
+
+sm80_bf16_tensorop_relu is RACE-FREE and ACCEPT.
+
+
+3. Volta changes the SM100 kernels needed
+-----------------------------------------
+
+Before these, every SM100 unit was UNSUPPORTED or CHECK-FAILED on Volta's own account:
+
+- `clusterlaunchcontrol.try_cancel.multicast::cluster::all` (CUTLASS's default, stream-K and
+  grouped schedulers) lowers as the plain request: every cluster holds one CTA.
+- A warp collective other than `bar.warp.sync` (`elect.sync`, `shfl.sync`, ...) orders its
+  lanes' execution in G0, not memory: the MMA warp's 32 lanes all wait on a stage, then
+  elect.sync picks the lane that commits.
+- An async completion joined into an mbarrier phase is admitted to G0 (each query reads only
+  earlier joins, so a pass validates them by induction over the trace): the producer warp's
+  non-leader lanes reach the next empty phase only through the TMA's completion of full.
+- In G_HB an async op's completion carries the async effects that reached its issue (never
+  the issuer's own accesses): a stage refill follows the stage's previous TMA load through
+  TMA -> MMA -> tcgen05.commit -> refill. This settles open question (a) of
+  volta_findings.txt for async-proxy chains.

@@ -28,8 +28,8 @@
 //!   `clusterlaunchcontrol.try_cancel` response) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)`
 //!   holds the event through which each thread operation of generation `k` takes part in it (a
 //!   contribution's `Contribute`, a wait's release; for a pre-init phase, also the init),
-//!   `RELEASES(b, k)` the releases among them; a copy's completion is none, since `G0` orders
-//!   nothing after it.
+//!   `RELEASES(b, k)` the releases among them; a copy's completion is none, being no thread's
+//!   event.
 //!   `BARRIEROPERATIONS(b, k + 1)` the event each operation of generation `k + 1` begins with
 //!   (a contribution's `Contribute`, a copy's issue, a wait's `WaitStart`), whose program
 //!   predecessor `p` may be on another thread than `s`. Exited threads are not thread

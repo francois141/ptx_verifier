@@ -1625,21 +1625,6 @@ fn test_clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected() {
     }
 }
 
-/// `.multicast::cluster::all` writes the response into every CTA of the
-/// cluster, beyond the single CTA Volta analyzes.
-#[test]
-fn test_clusterlaunchcontrol_multicast_try_cancel_is_rejected() {
-    let module =
-        ptx!(parse "execution_error/clusterlaunchcontrol_multicast_try_cancel_is_rejected");
-    match analyze_one_thread(&module) {
-        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
-            let reason = reason.unwrap_or_default();
-            assert!(reason.contains("multicast::cluster::all"), "{reason}");
-        }
-        other => panic!("expected UnsupportedInstruction, got {other:?}"),
-    }
-}
-
 /// Clusters are assumed to hold a single CTA, so `mapa` into rank 1 names a
 /// CTA outside the cluster.
 #[test]

@@ -2325,6 +2325,49 @@ fn test_clusterlaunchcontrol_declined_cancel_ends_the_persistent_loop() {
     );
 }
 
+/// All 32 lanes wait on a phase, then elect.sync picks the one lane that arrives on the
+/// barrier the next phase depends on: elect.sync holds every lane until all arrive, so it
+/// orders each lane's wait before that phase (execution order) although it orders no memory.
+#[test]
+fn test_elect_sync_orders_the_waiting_lanes_before_the_elected_arrive() {
+    analyze!(
+        "success/elect_sync_orders_the_waiting_lanes_before_the_elected_arrive",
+        in_out_config(64, 64)
+    );
+}
+
+/// A copy's completion joins its phase in `G0` too: every check queries it only after it, so
+/// induction over the trace validates it. Here it is the only path from a producer lane's wait
+/// to the next phase, as in CUTLASS's TMA producer warp.
+#[test]
+fn test_producer_lanes_waits_ordered_through_the_copy_completion() {
+    analyze!(
+        "success/producer_lanes_waits_ordered_through_the_copy_completion",
+        in_out_config(64, 64)
+    );
+}
+
+/// An async op's completion carries the async effects that reached its issue (not the issuer's
+/// own accesses): the refill follows the first copy through the cp.async release alone, as a
+/// CUTLASS stage refill follows its previous load through the MMA's tcgen05.commit.
+#[test]
+fn test_copy_refill_ordered_through_an_async_tracked_release() {
+    analyze!(
+        "success/copy_refill_ordered_through_an_async_tracked_release",
+        in_out_config(64, 64)
+    );
+}
+
+/// CUTLASS's sm100 schedulers request `.multicast::cluster::all` even in a cluster of one
+/// CTA, where the multicast response reaches the requesting CTA alone: still declined.
+#[test]
+fn test_clusterlaunchcontrol_multicast_declined_cancel_ends_the_persistent_loop() {
+    analyze!(
+        "success/clusterlaunchcontrol_multicast_declined_cancel_ends_the_persistent_loop",
+        in_out_config(64, 64)
+    );
+}
+
 /// Gluon reads the response as two 64-bit halves packed by `mov.b128`; the
 /// 16 zero bytes are still the declined response.
 #[test]

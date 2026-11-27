@@ -10,8 +10,8 @@ use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};
 
 /// Lower `clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128
-/// [addr], [mbar]`. `.multicast::cluster::all` writes the response into every
-/// CTA of the cluster, beyond the one CTA Volta analyzes, so it is rejected.
+/// [addr], [mbar]{.multicast::cluster::all}`. Every cluster holds one CTA, so the multicast
+/// form writes the executing CTA's response alone, as the plain form does.
 pub(super) fn lower_clc_try_cancel(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -21,13 +21,11 @@ pub(super) fn lower_clc_try_cancel(
     const NAME: &str = "clusterlaunchcontrol.try_cancel";
     let modifiers: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
     let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-    if modifiers.contains(&"multicast::cluster::all") {
-        return Err(unsupported(
-            NAME,
-            ".multicast::cluster::all (it writes the response into every CTA of the \
-             cluster; only the executing CTA is modeled)",
-        ));
-    }
+    // Every cluster holds one CTA, so a multicast response reaches the executing CTA only.
+    let modifiers: Vec<&str> = modifiers
+        .into_iter()
+        .filter(|m| *m != "multicast::cluster::all")
+        .collect();
     if modifiers
         != [
             "async",

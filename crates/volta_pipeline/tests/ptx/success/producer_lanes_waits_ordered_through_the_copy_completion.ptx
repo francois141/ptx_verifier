@@ -1,0 +1,67 @@
+// CUTLASS's TMA producer warp in miniature: all 32 lanes of warp 1 wait on `empty`, the leader
+// announces the bytes on `full`, then elect.sync picks the lane that issues the bulk copy. A
+// lane's wait precedes the next `empty` phase only through that copy's completion of `full`.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<6>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 empty;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, full;
+    mov.u32 %r3, empty;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INIT_DONE:
+    bar.sync 0;
+    mov.u32 %r4, 0;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra CONSUMER;
+    setp.lt.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    setp.eq.u32 %p6, %r1, 32;
+PRODUCER:
+    and.b32 %r5, %r4, 1;
+    xor.b32 %r5, %r5, 1;
+PRODUCER_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r3], %r5;
+    @!%p3 bra PRODUCER_WAIT;
+    @%p6 mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
+    elect.sync %r6|%p5, 0xffffffff;
+    mul.wide.u32 %rd3, %r4, 16;
+    add.u64 %rd4, %rd1, %rd3;
+    @%p5 cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd4], 16, [%r2];
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p4, %r4, 3;
+    @%p4 bra PRODUCER;
+    bra DONE;
+CONSUMER:
+    and.b32 %r5, %r4, 1;
+CONSUMER_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r2], %r5;
+    @!%p3 bra CONSUMER_WAIT;
+    ld.shared.u32 %r7, [buf];
+    mul.wide.u32 %rd3, %r4, 4;
+    add.u64 %rd5, %rd2, %rd3;
+    st.global.u32 [%rd5], %r7;
+    mbarrier.arrive.shared::cta.b64 _, [%r3];
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p4, %r4, 3;
+    @%p4 bra CONSUMER;
+DONE:
+    ret;
+}

@@ -1,0 +1,64 @@
+// CUTLASS's MMA warp in miniature: all 32 lanes of warp 0 wait on `full`, elect.sync picks
+// one, and it alone arrives on `empty`, which thread 32 waits on before refilling `full`.
+// elect.sync holds every lane until all arrive, so each lane's wait precedes the next phase.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<6>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<2>;
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 empty;
+
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, full;
+    mov.u32 %r3, empty;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INIT_DONE:
+    bar.sync 0;
+    mov.u32 %r4, 0;
+    setp.lt.u32 %p1, %r1, 32;
+    @%p1 bra CONSUMER;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra STORE;
+PRODUCER:
+    and.b32 %r5, %r4, 1;
+    xor.b32 %r5, %r5, 1;
+PRODUCER_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r3], %r5;
+    @!%p3 bra PRODUCER_WAIT;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p4, %r4, 4;
+    @%p4 bra PRODUCER;
+    bra STORE;
+CONSUMER:
+    and.b32 %r5, %r4, 1;
+CONSUMER_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r2], %r5;
+    @!%p3 bra CONSUMER_WAIT;
+    elect.sync %r6|%p5, 0xffffffff;
+    @%p5 mbarrier.arrive.shared::cta.b64 _, [%r3];
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p4, %r4, 4;
+    @%p4 bra CONSUMER;
+STORE:
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    add.u64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    st.global.f32 [%rd5], %f1;
+    ret;
+}

@@ -101,12 +101,18 @@ REJECTIONS = {
                        "11-tcgen05-mma-scaled/mma_scaled_tcgen05_copy",
                        "12-cluster-launch-control/persistent_matmul_kernel_v2",
                        "13-conv-im2col/"]},
+    # cutlass/bugs.txt's CL-1 (NVIDIA/cutlass#3946): every lane of the storing warp issues the same
+    # TMA store, a race of equal values; each fixed copy (cutlass/patched/) is race free
+    "CUTLASS": {"benign": ["=gemm_bf16_tn_128x128", "gemm_bf16_nt_", "gemm_f16_nn_", "gemm_bf16_tn_colmajor_d",
+                           "gemm_bf16_tn_64x128", "gemm_f16_tn_128x256", "gemm_e4m3_tn_", "gemm_bf16_tn_2stage",
+                           "gemm_bf16_tn_batched", "gemm_bf16_tn_clc", "gemm_f16_tn_raster", "gemm_bf16_tn_relu",
+                           "gemm_bf16_tn_silu", "gemm_bf16_tn_gelu"]},
     "AI compiler": {"benign": ["sm_89/MatrixVectorMultiplicationFloat8Kernel"],
                     "open": ["sm_100a/FusedGEMMAddGELUFloat8Kernel"]},
 }
 
 ROWS = [  # (table row, case registry, race sweep csv)
-    ("CUTLASS", None, None),
+    ("CUTLASS", None, "cutlass"),
     ("DeepGEMM", None, None),
     ("FlashAttention", "flash-attention", None),
     ("FlashInfer", "flashinfer", None),

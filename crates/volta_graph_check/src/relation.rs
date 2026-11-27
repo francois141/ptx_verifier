@@ -10,21 +10,20 @@
 //!   async completion before the generation completes, the completion before each release.
 //!   A `barrier.cluster.arrive.relaxed` joins `G0` only; a thread fence before it joins through
 //!   a `FenceRelease` from the thread's last event before the fence.
-//!   A relaxed `expect_tx` or `complete_tx` joins nothing, and neither do the members of a
-//!   collective other than `bar.warp.sync` (`MemberOrdering::ExecutionOnly`): only its tracked
+//!   A relaxed `expect_tx` or `complete_tx` joins nothing. The members of a collective other
+//!   than `bar.warp.sync` (`MemberOrdering::ExecutionOnly`) join it in `G0` only: the op waits
+//!   for every member (execution order) but orders no memory, so in `G_HB` only its tracked
 //!   async completions join it.
 //! * `E_pipeline`: [`crate::pipeline`]. No projection here contains it.
 //!
 //! Projections:
 //!
 //! * [`IndependentGraph`] (`G0`, the barrier-epoch checks' input): `E_PO ∪ E_causal` and every
-//!   thread join of the candidate execution, which Weft's separation criterion, as the design
-//!   applies it, orders the next generation's operations through. It excludes the
-//!   associations still under verification, the async completions joined into mbarrier
-//!   phases ("this candidate join becomes ordering evidence only after the barrier-epoch check
-//!   validates the phase association"); completions joined into a warp's wait collective or a
-//!   thread's `cp.async` wait-group are independently fixed by that warp's or thread's program
-//!   order.
+//!   join of the candidate execution, which Weft's separation criterion, as the design applies
+//!   it, orders the next generation's operations through. An async completion joined into an
+//!   mbarrier phase is an association the checks validate; it is admitted all the same, since
+//!   every query reads only joins earlier in the trace than its own point, so a pass validates
+//!   them by induction over the trace (CUTLASS's producer lanes reach the next phase only so).
 //!   `G0` is execution order: an async arrive-on joins its phase, an exited thread (under
 //!   Sync') the generations that fire without it, and an async completion follows its
 //!   operation's issue and everything before it.
@@ -36,8 +35,9 @@
 //!   It is memory order, which the PTX ISA's asynchronous operations restrict: their
 //!   completion and arrive-on are ordered "only with respect to the memory operations
 //!   performed by the same asynchronous instruction", not the issuer's earlier ones. So an
-//!   `ArrivalOrdering::AsyncTracked` arrival joins nothing, a completion carries only its
-//!   operation's effects (through their observers), and `D` has no edge into a completion.
+//!   `ArrivalOrdering::AsyncTracked` arrival joins nothing, a completion carries its
+//!   operation's effects and the async effects that reached its issue (through their
+//!   observers), never the issuer's own accesses, and `D` has no edge into a completion.
 //!   Nor does an exited thread join: a barrier orders the accesses of the threads
 //!   "participating in the barrier", and Sync' counts an exit as arrived only for firing.
 //!
@@ -92,13 +92,16 @@ impl Admission {
 
     /// Whether `kind`, a contribution to `generation`, joins it.
     fn joins(self, graph: &EventGraph, generation: GenerationId, kind: ContributionKind) -> bool {
-        let members_join = !matches!(
-            graph.generation(generation).kind,
-            GenerationKind::Collective {
-                ordering: MemberOrdering::ExecutionOnly,
-                ..
-            }
-        );
+        // An execution-only collective holds every member until all arrive: it orders
+        // execution (G0) though not memory (G_HB).
+        let members_join = self.projection == Projection::Independent
+            || !matches!(
+                graph.generation(generation).kind,
+                GenerationKind::Collective {
+                    ordering: MemberOrdering::ExecutionOnly,
+                    ..
+                }
+            );
         match kind {
             ContributionKind::Blocking
             | ContributionKind::Arrival {
@@ -113,10 +116,7 @@ impl Admission {
             ContributionKind::Exited => {
                 self.exited_threads && self.projection == Projection::Independent && members_join
             }
-            ContributionKind::AsyncCompletion { .. } => {
-                self.projection == Projection::Validated
-                    || graph.generation(generation).kind != GenerationKind::MbarrierPhase
-            }
+            ContributionKind::AsyncCompletion { .. } => true,
             ContributionKind::CompleteTx { .. } | ContributionKind::ExpectTx { .. } => false,
         }
     }
@@ -246,7 +246,8 @@ impl HbView<'_> {
         self.observers(op).iter().any(|&p| self.thread_hb(p))
     }
 
-    /// The releases, recorded so far, of generations that join `op`'s completion.
+    /// The releases, recorded so far, of generations that join `op`'s completion or the
+    /// completion of an op whose issue `op`'s effects reached.
     pub fn observers(&self, op: AsyncOpId) -> &[ThreadPoint] {
         self.state.observers.get(&op).map_or(&[], Vec::as_slice)
     }
@@ -263,6 +264,8 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
     let mut index = vec![0u32; n];
     let mut generation_clock: HashMap<GenerationId, Vec<u32>> = HashMap::new();
     let mut issue_clock: HashMap<AsyncOpId, Vec<u32>> = HashMap::new();
+    // Without the issue carried, the async ops whose effects reached each op's issue.
+    let mut carried: HashMap<AsyncOpId, Vec<AsyncOpId>> = HashMap::new();
     let mut state = SweepState::default();
 
     let mut thread_joins: HashMap<EventId, GenerationId> = HashMap::new();
@@ -326,10 +329,25 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
                         };
                         for &op in joined_ops.get(&g).map_or(&[][..], Vec::as_slice) {
                             state.observers.entry(op).or_default().push(p);
+                            for &x in carried.get(&op).map_or(&[][..], Vec::as_slice) {
+                                state.observers.entry(x).or_default().push(p);
+                            }
                         }
                     }
                     EventKind::AsyncIssue(op) => {
                         issue_clock.insert(op, clocks[ti].clone());
+                        if !admission.carries_issue() {
+                            let clock = &clocks[ti];
+                            let reached: Vec<AsyncOpId> = state
+                                .observers
+                                .iter()
+                                .filter(|(_, obs)| {
+                                    obs.iter().any(|o| clock[o.thread.0 as usize] >= o.index)
+                                })
+                                .map(|(&x, _)| x)
+                                .collect();
+                            carried.insert(op, reached);
+                        }
                     }
                     _ => {}
                 }

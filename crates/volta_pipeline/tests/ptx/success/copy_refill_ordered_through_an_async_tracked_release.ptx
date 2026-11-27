@@ -1,0 +1,58 @@
+// A bulk copy fills `buf`; the consumer observes it, then frees the stage only through a
+// cp.async whose `.noinc` arrive-on completes `empty`, and the producer refills `buf`. The
+// first copy reached that cp.async's issue, so its completion orders the refill after it.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 16 .b8 scratch[16];
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 empty;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, full;
+    mov.u32 %r3, empty;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INIT_DONE:
+    bar.sync 0;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra CONSUMER;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r2];
+EMPTY0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r3], 0;
+    @!%p3 bra EMPTY0;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1+16], 16, [%r2];
+FULL1:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r2], 1;
+    @!%p3 bra FULL1;
+    ld.shared.u32 %r5, [buf];
+    st.global.u32 [%rd2], %r5;
+    bra DONE;
+CONSUMER:
+FULL0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r2], 0;
+    @!%p3 bra FULL0;
+    cp.async.ca.shared.global [scratch], [%rd1+32], 4;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r3];
+    cp.async.wait_all;
+DONE:
+    ret;
+}
