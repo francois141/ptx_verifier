@@ -1,0 +1,20 @@
+{
+  "description": "TritonBench softmax_triton2.py: softmax_kernel on output_ptr float32[64, 512], input_ptr float32[64, 512]",
+  "kernel": "softmax_kernel",
+  "block": 128,
+  "grid": [64, 1, 1],
+  "dynamic_shared_bytes": 16,
+  "arrays": [
+    {"name": "output_ptr", "kind": "inout", "dtype": "f32", "shape": [64, 512]},
+    {"name": "input_ptr", "kind": "inout", "dtype": "f32", "shape": [64, 512]}
+  ],
+  "params": [
+    {"name": "output_ptr", "ptr": "output_ptr"},
+    {"name": "input_ptr", "ptr": "input_ptr"},
+    {"name": "input_row_stride", "int": 512},
+    {"name": "output_row_stride", "int": 512},
+    {"name": "n_cols", "int": 512},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

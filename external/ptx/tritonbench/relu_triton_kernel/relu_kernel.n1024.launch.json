@@ -1,0 +1,20 @@
+{
+  "description": "TritonBench relu_triton_kernel.py: relu_kernel on x_ptr float32[1024], out_ptr float32[1024]",
+  "kernel": "relu_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "x_ptr", "kind": "inout", "dtype": "f32", "shape": [1024]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [1024]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ],
+  "cta": [0, 0, 0],
+  "spec": "../specs/relu.spec",
+  "dims": {"N": 1024, "BS": 1024, "B0": 0}
+}

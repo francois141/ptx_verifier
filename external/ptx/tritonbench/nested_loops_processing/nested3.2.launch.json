@@ -1,0 +1,18 @@
+{
+  "description": "TritonBench nested_loops_processing.py: nested3 on in_ptr int32[8, 8], out_ptr int32[8, 8]",
+  "kernel": "nested3",
+  "block": 128,
+  "grid": [2, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "i32", "shape": [8, 8]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "i32", "shape": [8, 8]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "stride_m", "int": 8},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "description": "TritonBench fused_recurrent_hgrn.py: fused_recurrent_hgrn_fwd_kernel on x float32[1, 2, 2, 2], g float32[1, 2, 2, 2], o float32[1, 2, 2, 2], h0 float32[1, 2, 2], ht float32[1, 2, 2]",
+  "kernel": "fused_recurrent_hgrn_fwd_kernel",
+  "block": 32,
+  "grid": [1, 2, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "x", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "g", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "o", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "h0", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2]},
+    {"name": "ht", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "g", "ptr": "g"},
+    {"name": "o", "ptr": "o"},
+    {"name": "h0", "ptr": "h0"},
+    {"name": "ht", "ptr": "ht"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

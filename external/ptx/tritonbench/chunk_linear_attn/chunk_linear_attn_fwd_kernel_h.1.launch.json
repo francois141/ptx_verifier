@@ -1,0 +1,25 @@
+{
+  "description": "TritonBench chunk_linear_attn.py: chunk_linear_attn_fwd_kernel_h on k float32[2, 4, 128, 64], v float32[2, 4, 128, 64], h float32[2, 4, 128, 64]",
+  "kernel": "chunk_linear_attn_fwd_kernel_h",
+  "block": 128,
+  "grid": [1, 1, 8],
+  "dynamic_shared_bytes": 32768,
+  "arrays": [
+    {"name": "k", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "v", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "h", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]}
+  ],
+  "params": [
+    {"name": "k", "ptr": "k"},
+    {"name": "v", "ptr": "v"},
+    {"name": "h", "ptr": "h"},
+    {"name": "s_qk_h", "int": 8192},
+    {"name": "s_qk_t", "int": 64},
+    {"name": "s_vo_h", "int": 8192},
+    {"name": "s_vo_t", "int": 64},
+    {"name": "s_h_h", "int": 8192},
+    {"name": "s_h_t", "int": 64},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

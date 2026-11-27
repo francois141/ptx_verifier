@@ -1,0 +1,23 @@
+{
+  "description": "TritonBench rms_norm_triton.py: rms_norm_kernel on Y float32[32, 128], X float32[32, 128], W float32[128]",
+  "kernel": "rms_norm_kernel",
+  "block": 128,
+  "grid": [32, 1, 1],
+  "dynamic_shared_bytes": 16,
+  "arrays": [
+    {"name": "Y", "kind": "inout", "dtype": "f32", "shape": [32, 128]},
+    {"name": "X", "kind": "inout", "dtype": "f32", "shape": [32, 128]},
+    {"name": "W", "kind": "inout", "dtype": "f32", "shape": [128]}
+  ],
+  "params": [
+    {"name": "Y", "ptr": "Y"},
+    {"name": "X", "ptr": "X"},
+    {"name": "W", "ptr": "W"},
+    {"name": "y_stride_r", "int": 128},
+    {"name": "x_stride_r", "int": 128},
+    {"name": "N", "int": 128},
+    {"name": "eps", "float": 1e-05},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

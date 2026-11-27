@@ -1,0 +1,21 @@
+{
+  "description": "TritonBench l2_norm_triton2.py: _l2_norm_fwd_1pass_kernel on X float32[4, 8], Y float32[4, 8]",
+  "kernel": "_l2_norm_fwd_1pass_kernel",
+  "block": 128,
+  "grid": [4, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "X", "kind": "inout", "dtype": "f32", "shape": [4, 8]},
+    {"name": "Y", "kind": "inout", "dtype": "f32", "shape": [4, 8]}
+  ],
+  "params": [
+    {"name": "X", "ptr": "X"},
+    {"name": "Y", "ptr": "Y"},
+    {"name": "stride_x_row", "int": 8},
+    {"name": "N", "int": 8},
+    {"name": "eps", "float": 1e-06},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ],
+  "cta": [3, 0, 0]
+}

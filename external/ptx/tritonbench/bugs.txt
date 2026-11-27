@@ -1,0 +1,310 @@
+TritonBench-G bugs found with Volta
+===================================
+
+Sources: TritonBench_G_v1 (external/ptx/sources/TritonBench, the thunlp/TritonBench
+submodule), compiled for sm_100a with Triton 3.5.1 by external/ptx/extraction/tritonbench.py.
+Launch files are under external/ptx/tritonbench/<file>/, specs under specs/, and verdicts
+are in external/ptx/output/tritonbench.csv:
+
+    python3 external/ptx/races.py --framework tritonbench
+
+Volta treats floats as exact reals, so none of these bugs is a rounding difference. A
+kernel's own test code launches it (<kernel>.<i>) unless a size is named (<kernel>.<size>,
+the call in tritonbench.py's SIZES). Each size reproducing a bug has a control beside it
+that verifies, or is ACCEPT against the same spec.
+
+Part 1 lists the bugs Volta reproduces. Part 2 lists bugs found by reading every source
+file, which Volta cannot reach yet; each says what blocks it. Part 3 lists rejections that
+are not kernel bugs. Part 4 has two observations about the Triton compiler.
+
+
+1. Reproduced by Volta (committed launches)
+-------------------------------------------
+
+TB-1  relu_triton_kernel.py: relu_kernel stores only when pid == 0
+      `if pid == 0: tl.store(...)`. Every block after the first computes its tile and
+      drops it, so out[1024:] keeps torch.empty's garbage.
+      relu_kernel_v2.n2048 (CTA 1) against specs/relu.spec: REJECT, 1024 elements never
+      written. Control relu_kernel.n1024: ACCEPT.
+
+TB-2  triton_softmax.py: softmax_kernel ignores columns past 1024
+      BLOCK_SIZE = min(next_power_of_2(n_cols), 1024), and the kernel loads one block per
+      row with no loop. For n_cols > 1024, columns >= 1024 are never written and are left
+      out of the normalizer.
+      softmax_kernel_v2.1x2000 against specs/softmax.spec: REJECT, 976 elements never
+      written. Control softmax_kernel.1x1000: ACCEPT.
+
+TB-3  layer_norm_liger.py: _layer_norm_forward_kernel sums the variance over padded lanes
+      X_row is loaded with other=0, and var = sum((X_row - mean)^2) / n_cols runs over all
+      BLOCK_SIZE lanes. Each padded lane adds mean^2, so Y and RSTD are wrong whenever
+      n_cols is not a power of two. Upstream Liger masks it with tl.where.
+      _layer_norm_forward_kernel.1x100 against specs/layer_norm.spec: REJECT, 100 elements
+      refuted by a numeric counterexample. Control .1x128: ACCEPT.
+
+TB-4  ksoftmax_triton.py: the masked softmax reads the mask with the wrong stride
+      The wrapper passes stride_m = M.stride(-1), which is 1 for a contiguous mask. The
+      kernel reads mask row n at M + n * 1 + k instead of M + n * K + k ('qk'), and
+      likewise row m for 'bk'. Every row but the first adds a shifted window of the mask.
+      _softmax.qk_row1 (CTA (0, 1)) against specs/ksoftmax_qk.spec: REJECT, 8 elements
+      refuted by a numeric counterexample. Control .qk_row0 (row 0 is unaffected): ACCEPT.
+
+TB-5  kldiv_triton.py: _kldiv_kernel_forward stores each column chunk's sum to its own slot
+      For every reduction but 'none' the loop does `tl.store(loss_ptr, sum); loss_ptr += 1`
+      into a (B,) output. The chunk sums are never added together, and chunk c of row r
+      lands in out[r + c]. BLOCK_SIZE is capped at 16384, so this is reachable for S > 16384.
+      _kldiv_kernel_forward_v2.1x16385: out-of-bounds store to out[1] (0x50004). Control
+      .1x16384 verifies.
+
+TB-6  l2_norm_triton1.py: _l2_norm_fwd_1pass_kernel indexes Y with X's row stride
+      y = torch.empty_like(x) is contiguous when x is row-strided, for example
+      big[:, :8] of a (4, 16) tensor. The wrapper only makes x contiguous when
+      stride(-1) != 1, yet the kernel offsets Y by stride_x_row. Row r is written at
+      r * 16 of an 8-column y.
+      _l2_norm_fwd_1pass_kernel.strided (CTA 3): out-of-bounds store. Control .contiguous
+      verifies.
+
+TB-7  l2_norm_triton2.py: the same forward kernel bug as TB-6
+      Its backward kernel (not run) also offsets DY and DX by X's row stride.
+      .strided (CTA 3): out-of-bounds store. Control .contiguous verifies.
+
+TB-8  nested_loops_processing.py: nested3's unmasked pointer walk outgrows the tensor
+      Two outer by two middle by two inner iterations advance the pointers by 2 * stride_n
+      per tile. Each 2 x 2 tile row reads columns up to 27 and writes up to 47, with no
+      mask, while the test's matrices have 4 to 16 columns.
+      nested3.1 (4 x 4): out-of-bounds load. nested3.2 (8 x 8) and nested3.3 (16 x 16): tile
+      row 0's columns 8.. are tile row 1's columns 0.., so two threads store different
+      values to one element (a write-write race, two different stores at lines 70 and
+      101). Every CTA of the grid also writes the same elements.
+
+TB-9  chunk_gla_fwd.py: A_intra is allocated with BT rows instead of T
+      For K > 256, chunk_fwd_intra_gated_gk_fn allocates A_intra as (NK, B, H, BT, BC).
+      Both chunk_gla_fwd_A_kernel_intra_sub_intra_split and _merge index it as
+      (NK, B, H, T, BC). Upstream FLA allocates T rows.
+      chunk_gla_fwd_A_kernel_intra_sub_intra_merge.1 (the file's own test: K = 512,
+      T = 128, BT = 16): out-of-bounds load of A_intra (0x18000).
+
+TB-10 chunk_linear_attn.py: the backward kernels read a stride-0 gradient as dense
+      The test's `o.sum().backward()` hands backward() an expanded, stride-0 `do` backed by
+      one element. backward() never calls .contiguous() (upstream FLA's @contiguous does),
+      and the kernels index `do` as a dense [B, H, T, V] tensor, so they read past the
+      single element.
+      chunk_linear_attn_bwd_kernel_dh.1 and _dqkv.1: out-of-bounds loads of `do`.
+
+TB-11 fused_recurrent_hgrn.py: fused_recurrent_hgrn_bwd_kernel, the same as TB-10
+      fused_recurrent_hgrn_bwd_kernel.1 and _v2.1: out-of-bounds loads of `do`.
+
+TB-12 fused_recurrent_retention.py: fused_recurrent_retention_bwd_kernel, the same as TB-10
+      fused_recurrent_retention_bwd_kernel.1 and _v2.1: out-of-bounds loads of `do`.
+
+TB-13 parallel_attention.py: parallel_rebased_bwd_kernel, the same as TB-10, for `do` and `dz`
+      The wrapper also reads `do` with v's strides.
+      parallel_rebased_bwd_kernel.1 and .2 (the tests whose loss is output.sum()):
+      out-of-bounds loads. .3, whose gradient is dense, verifies.
+
+TB-14 attention_fwd_triton1.py: attention_fwd_kernel's block pointers have no boundary_check
+      The q, k, v and o block pointers are loaded and stored unchecked in BT = 32 row
+      tiles. Any T % 32 != 0 reads and writes past each head.
+      attention_fwd_kernel_v5.1 (the file's own test case 6, T = 1): out-of-bounds load at
+      0x12000.
+
+
+2. Found by review, not reproduced by Volta yet
+-----------------------------------------------
+
+Each entry says what keeps it out of Part 1. "Volta gap" names what Volta does not model
+in that kernel's PTX; "Triton 3.5.1 descriptor" is Part 4's first observation.
+Confidence is high (H) unless marked medium (M).
+
+R-1   fused_recurrent_delta.py: fused_recurrent_bwd_kernel
+      It has TB-10's stride-0 `dht`/`do`; Volta reproduces this in the full sweep (the file
+      is not kept). Separately, the headwise `p_dbeta` lacks `+ i_v * BV`, so for
+      V > BV (NV > 1) each i_v block writes columns 0..BV-1 and leaves the rest
+      uninitialized.
+R-2   geglu_tanh_triton.py: calculate_settings hard-codes BLOCK_SIZE = 128
+      Columns >= 128 are never computed: c[:, 128:] is never written in the forward pass,
+      and da/db keep their inputs in the backward pass. The file's own test case 3,
+      (2, 256), hits it. Volta shows 128 of 256 elements written per row; libdevice's tanh
+      has no spec form.
+R-3   attention_fwd_triton2.py, attention_forward_triton.py, attn_fwd_causal.py,
+      attn_fwd_triton.py: every mask is `tl.arange(0, 128) < 96`, whatever HEAD_DIM is
+      The tests use head_dim 128: output columns 96..127 are never written, and QK drops
+      those dims. attention_fwd_triton2 and attention_forward_triton also leave padded
+      keys unmasked (qk = 0 enters the softmax). attn_fwd_triton with HEAD_DIM = 64 reads
+      across rows. Volta gap: tcgen05.ld .pack::16b.
+R-4   attention_llama.py: _fwd_kernel masks keys with offs_n instead of block_n_offs (line 59)
+      Padded keys of the last tile are not masked when N_CTX > 64 and N_CTX % 64 != 0.
+      (M) The causal mask `offs_m >= key + start_position` has start_position on the wrong
+      side. Blocked by the Triton 3.5.1 descriptor.
+R-5   attention_score.py: _score_kernel masks padded query rows only `if not IS_EVEN_N`
+      That flag is about the KV length. Rows past N_CTX add exp2(-m) terms to o when
+      N_CTX % BLOCK_M != 0 and NKV_CTX % BLOCK_N == 0. Blocked by the Triton 3.5.1
+      descriptor.
+R-6   flash_attn.py and triton_attention.py: Q/K/V/O block pointers without boundary_check,
+      and unmasked L/M stores
+      Any seq_len % BLOCK != 0 accesses out of bounds and reads the next head. Blocked by
+      the Triton 3.5.1 descriptor.
+R-7   attention_kernel.py and attention_kernel_aligned.py: _fwd_kernel_aligned has no
+      boundary checks
+      N_CTX must be a multiple of the blocks, and no assert says so. attention_kernel's
+      rel_h/rel_w bias indexing is right only for BLOCK_N == 64. Blocked by the Triton
+      3.5.1 descriptor.
+R-8   int_scaled_matmul.py: EVEN_K = (K % 2 == 0) should be K % BLOCK_K == 0
+      An even K that is not a multiple of BLOCK_K loads the last K tile unmasked. Volta
+      gap: mma .satfinite.
+R-9   matmul_triton2.py: offs_am/offs_bn are neither masked nor wrapped
+      The file's own M = N = K = 16 case reads A and B out of bounds under every autotune
+      config. Volta gap: tcgen05.mma kind::tf32.
+R-10  matmul_kernel.py: M = N = K = 4096 and the strides are hard-coded with no masks
+      The wrapper's M, N, K are ignored, so other sizes go out of bounds. Blocked by the
+      Triton 3.5.1 descriptor.
+R-11  streamk_matmul.py, int4_matmul.py, matmul_dequantize.py, matmul_dequantize_int4.py:
+      no M/N/K masks
+      The divisibility asserts are commented out or appear only in docstrings.
+      matmul_dequantize_int4 also takes `k // (groupsize // BLOCK_K)`, a division by zero
+      for BLOCK_K > groupsize. (M) Volta gaps: kind::tf32, the descriptor.
+R-12  llama_ff_triton.py: ff_llama's K loop loads x, rms_w, w1 and w3 with no mask
+      K % 64 != 0 reads out of bounds. Its RACE-CONDITION in the sweep is the benign
+      Part 3 pattern.
+R-13  int8_dequant_matmul.py: `tl.load(bias + rn)` is unmasked
+      Out of bounds whenever N % BLOCK_N != 0. The file fails to compile (it imports the
+      removed triton.ops).
+R-14  destindex_copy.py: _fwd_kernel_destindex_copy_kv never applies the head stride
+      Only head 0 is copied, and the file's test has 12 heads. BLOCK_DMODEL =
+      next_power_of_2(D) is unmasked, so D = 96 is out of bounds. Volta gap: symbolic
+      address (dest index read from memory).
+R-15  chunk_retention.py: chunk_retention_bwd_kernel_dh is a mangled copy of FLA's recurrence
+      It never loads q, contracts the wrong axes, and stores once after the loop, so dh
+      chunks 1.. are never written and _dqkv reads uninitialized dh. Volta gap: symbolic
+      guard.
+R-16  layer_norm_welfold.py: the Inductor reduction loops omit the tl.where(rmask) accumulate
+      Padded lanes add (0 - mean)^2 to the variance (test case 4: rstd = rsqrt(1023 x^2 +
+      eps)). Volta gap: createpolicy.
+R-17  fast_ce_loss.py: the chunked kernel stores logsumexp only for chunk 0
+      tl.store(logsumexp_ptr) is indented inside `if chunk_idx == 0`, so the host's
+      logsumexp over chunks reads torch.empty. With softcapping, padded -inf lanes become
+      -SOFTCAP and enter the sum. Volta gap: symbolic branch to a vector load.
+R-18  softmax_optimize.py: softmax_kernel_online_v2 lacks FlagGems' all-neg-inf guard
+      Padded lanes give exp(-inf - -inf) = NaN, so every row comes out NaN for any N that is
+      not a multiple of TILE_N. Volta gap: symbolic branch to a vector load.
+R-19  rotary_transform.py: `seqlen_offsets += seqlen` where upstream asserts
+      offset + seqlen <= seqlen_ro
+      cos/sin rows past seqlen are masked to cos = 1, sin = 0, so the test applies no
+      rotation. Volta gap: symbolic branch to a vector load.
+R-20  var_len_copy.py: the mask `offset < length` should be `i + offset < length`
+      Segments longer than 256 copy past their end. Volta gap: the lengths are read from
+      memory.
+R-21  cache_transform_triton.py: `tl.load(cumsum_lengths + tl.arange(0, N_ELEMENTS))` is
+      unmasked
+      N_ELEMENTS is next_power_of_2(num_seqs), so the extra element is read out of bounds
+      and can enter the max. Volta gap: symbolic address.
+R-22  lightning_attention.py: no mask on the e dimension
+      e % BLOCK_MODEL != 0 (e.g. 24) aliases rows, racing and writing out of bounds. The
+      forward kernel fails to compile under Triton 3.5.1.
+R-23  kv_cache_filling.py: quantization min/max includes the masked d >= head_dim lanes,
+      which read 0
+      Scales and zeros are wrong for a head_dim that is not a power of two. Volta gap:
+      cvt.rni.
+R-24  flash_decode2_llama.py, flash_decode2_phi.py: stage 2 loops over cdiv(seqlen,
+      BLOCK_SEQ) blocks with no bound against mid_out's
+      The files' own tests read Mid_O and LogExpSum out of bounds. Volta gap: symbolic
+      branch.
+R-25  apply_penalty.py: the test passes p_cumsum_seq_len with B entries; program B-1 reads
+      entry B
+      (M) Duplicate token ids are also stored with different values (a race). Volta gap:
+      symbolic guard.
+R-26  mixed_sparse_attention.py: column indices are loaded under `num_cols > 0` only (OOB)
+      Dummy block iterations add exp2(0 - m) to l_i. The kernel only partly compiles
+      under Triton 3.5.1.
+R-27  rotary_emb_nopad.py: fused_rotary_embedding_kernel_v2 indexes k and kv_cache by the
+      query head
+      The wrapper allows GQA, so k and kv_cache are read and written out of bounds.
+      Volta gap: symbolic div.s64.
+R-28  index_select_cat.py: the output is offset by the source's strides
+      A sliced source writes out of bounds. Volta gap: symbolic address.
+R-29  chunk_gated_attention.py: p_gn reads row i_t*BT + BT - 1, past T for a partial last
+      chunk
+      It is padded to 0, which corrupts the final state ht. Upstream FLA fixed this with
+      min(.., T) - 1. (M) The file's test also passes k transposed.
+R-30  rms_rbe_matmul.py, rms_matmul_rbe.py: RBE_EPILOGUE, THETA and start_token_position
+      are never used
+      No rotary embedding is applied, contrary to the docstring. The loads are also
+      unmasked for K % BLOCK_K != 0. No launch file is written, because the wrapper's
+      tensor subclass can't be described.
+R-31  cross_entropy2.py: with SPLIT=False and several column blocks, the per-block partial
+      lse and loss are never combined
+      The backward reads block 0's partial lse. Volta gap: symbolic branch.
+R-32  fifth_order_sph_harmonics.py: with a wrapper-allocated output of exactly 11 columns,
+      col_offset > 0 shifts rows into the next one
+      The test's offsets of 1..3 leave outputs unwritten.
+R-33  int8_quantization.py: the k launch reuses q's L and q_int8's shape
+      A shorter k reads and writes out of bounds. It was blocked by redux.sync and has
+      not been re-run since Volta modeled it.
+R-34  sgmv_expand_slice.py: the column mask is `< slice_offset + N`, never checked against
+      the output width
+      The test writes past the end. It fails to compile under Triton 3.5.1.
+R-35  ksoftmax_triton.py: _softmax_backward (LOG, CAUSAL) gives masked positions o = 0
+      grad_in there is -sum(g) instead of 0. Upstream xformers has the same code.
+R-36  (M) The files' own tests misuse their kernels' layouts; the kernels themselves match
+      upstream:
+      - softmax_reducev.py, token_attn_reduceV.py, token_attn_mistral.py and
+        token_attn_llama2.py pass V as (heads, L, D), and kv_group_num = 0 divides by zero.
+      - chunk_bwd_dqkg.py and chunk_gla_simple.py pass h as (B, H, K, V).
+      - parallel_retention_attention.py uses q's strides and q's B*H for k.
+      - quantize_kv_copy.py passes DestLoc past Out.
+      - context_attn_nopad.py and context_attn_mistral.py pass max_input_len below the
+        lengths.
+      - mul_exponent_compensator.py's floor-division grid launches 0 CTAs.
+      - decay_cumsum.py's floor grid leaves tails unwritten.
+R-37  (M) l2_norm_bwd.py, rmsnorm_fused.py, rmsnorm_fused_llama.py, layernorm_fwd_triton.py:
+      Y/DX are indexed with X's row stride, which is TB-6's bug for a row-strided x
+R-38  (M) kldiv_triton.py: the backward wrapper passes y_pred as the destination
+      The gradient overwrites the predictions in place, and the test reuses them.
+R-39  (M) triton_linear_activation.py: rows and columns wrapped with % M / % N are stored
+      under always-true masks
+      Duplicate stores of equal values result. The file fails to compile (triton.ops).
+R-40  (M) f8_conversion_utils.py: N is taken from untyped_storage() rather than numel()
+      A view writes past its result.
+
+
+3. Volta rejections that are not kernel bugs
+--------------------------------------------
+
+B-1   Redundant shared-memory stores after a reduction (benign)
+      After a shfl butterfly reduction, every lane holding a replica stores the same
+      value to one shared slot (for example `st.shared [smem + (tid >> 3)]`). That is a
+      formal write-write race of equal values; Volta has no equal-store exception.
+      Seen in max_reduction/max_kernel, mean_reduction, matrix_reduction, triton_argmax,
+      batched_vecmat_mult, layer_norm_triton/_layer_norm_bwd_dwdb, chunk_gla_fwd/
+      _intra_sub_intra and _split, chunk_gated_attention/_fwd_kernel_h,
+      fused_recurrent_retention/_fwd_kernel, fused_recurrent_delta/_fwd_kernel and
+      parallel_attention/parallel_rebased_fwd_kernel.
+B-2   Replica reads racing the owner's in-place store (benign)
+      When a tile is smaller than the CTA, the threads holding replicas load an element
+      while its owner (the store predicate, e.g. `(tid & 112) == 0`) overwrites it in
+      place. Their loaded values are never stored.
+      Seen in rope_embedding, fast_rope_embedding, rope_transform,
+      rope_backward_transform, fast_layernorm/layernorm_backward,
+      fast_rms_layernorm/_rms_layernorm_backward and decay_cumsum/bwd_decay_global_cumsum.
+B-3   Large finite masks
+      Masks of -1e6 / -1e8 (attn_fwd_causal, context_attn_llama, context_attn_bloom)
+      would be refuted against an exact causal spec. That is an artifact of exact reals,
+      not a bug.
+
+
+4. Triton compiler observations
+-------------------------------
+
+T-1   Triton 3.5.1's tcgen05 shared-memory descriptors leave bits 46-48 at 0b000
+      PTX ISA 9.7.18.4.1 fixes that field at 0b001 on sm_100. Every tl.dot that Triton
+      3.5.1 lowers to tcgen05.mma stops there (46 launches in 17 files, e.g. the constant
+      0x4000004002000000 or-ed into each descriptor). Triton 3.9 sets the field. This is
+      latent: today's hardware runs these kernels.
+T-2   Triton 3.9's tl.dot lowering has no tcgen05 fences around the barrier
+      It zeroes the accumulator with tcgen05.st from every warp, then
+      tcgen05.wait::st and bar.sync, then one thread's tcgen05.mma, with no
+      tcgen05.fence::before_thread_sync / after_thread_sync around the barrier. Recompiled
+      with Triton 3.9, 8 of the 11 MMA files that still compile fail tensor-operation
+      ordering this way (triton_matmul, matmul_kernel, matmul_triton_autotune,
+      matmul_persistent_triton, matmul_leakyrelu_fp8, matmul_dequantize, bmm_chunk_fwd,
+      bmm_chunk_bwd).
+      It is the same pattern as Gluon finding (1) in eval_table.py.

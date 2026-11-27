@@ -1,0 +1,22 @@
+{
+  "description": "TritonBench kldiv_triton.py: _kldiv_kernel_forward on y_ptr float32[1, 16385], gt_ptr float32[1, 16385], loss_ptr float32[1]",
+  "kernel": "_kldiv_kernel_forward",
+  "block": 512,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 64,
+  "arrays": [
+    {"name": "y_ptr", "kind": "inout", "dtype": "f32", "shape": [1, 16385]},
+    {"name": "gt_ptr", "kind": "inout", "dtype": "f32", "shape": [1, 16385]},
+    {"name": "loss_ptr", "kind": "inout", "dtype": "f32", "shape": [1]}
+  ],
+  "params": [
+    {"name": "y_ptr", "ptr": "y_ptr"},
+    {"name": "y_stride", "int": 16385},
+    {"name": "gt_ptr", "ptr": "gt_ptr"},
+    {"name": "gt_stride", "int": 16385},
+    {"name": "loss_ptr", "ptr": "loss_ptr"},
+    {"name": "n_cols", "int": 16385},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

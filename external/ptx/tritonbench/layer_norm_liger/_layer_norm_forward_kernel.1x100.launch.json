@@ -1,0 +1,31 @@
+{
+  "description": "TritonBench layer_norm_liger.py: _layer_norm_forward_kernel on Y_ptr float32[1, 100], X_ptr float32[1, 100], W_ptr float32[100], B_ptr float32[100], Mean_ptr float32[1], RSTD_ptr float32[1]",
+  "kernel": "_layer_norm_forward_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 16,
+  "arrays": [
+    {"name": "Y_ptr", "kind": "inout", "dtype": "f32", "shape": [1, 100]},
+    {"name": "X_ptr", "kind": "inout", "dtype": "f32", "shape": [1, 100]},
+    {"name": "W_ptr", "kind": "inout", "dtype": "f32", "shape": [100]},
+    {"name": "B_ptr", "kind": "inout", "dtype": "f32", "shape": [100]},
+    {"name": "Mean_ptr", "kind": "inout", "dtype": "f32", "shape": [1]},
+    {"name": "RSTD_ptr", "kind": "inout", "dtype": "f32", "shape": [1]}
+  ],
+  "params": [
+    {"name": "Y_ptr", "ptr": "Y_ptr"},
+    {"name": "Y_row_stride", "int": 100},
+    {"name": "X_ptr", "ptr": "X_ptr"},
+    {"name": "X_row_stride", "int": 100},
+    {"name": "W_ptr", "ptr": "W_ptr"},
+    {"name": "B_ptr", "ptr": "B_ptr"},
+    {"name": "Mean_ptr", "ptr": "Mean_ptr"},
+    {"name": "RSTD_ptr", "ptr": "RSTD_ptr"},
+    {"name": "n_cols", "int": 100},
+    {"name": "eps", "float": 0.5},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ],
+  "spec": "../specs/layer_norm.spec",
+  "dims": {"R": 1, "N": 100}
+}

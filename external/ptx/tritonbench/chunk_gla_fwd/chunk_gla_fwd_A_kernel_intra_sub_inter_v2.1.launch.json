@@ -1,0 +1,24 @@
+{
+  "description": "TritonBench chunk_gla_fwd.py: chunk_gla_fwd_A_kernel_intra_sub_inter on q float32[2, 2, 128, 512], k float32[2, 2, 128, 512], g float32[2, 2, 128, 512], A float32[2, 2, 128, 16]",
+  "kernel": "chunk_gla_fwd_A_kernel_intra_sub_inter",
+  "block": 32,
+  "grid": [8, 1, 4],
+  "dynamic_shared_bytes": 37376,
+  "arrays": [
+    {"name": "q", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 512]},
+    {"name": "k", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 512]},
+    {"name": "g", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 512]},
+    {"name": "A", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 16]}
+  ],
+  "params": [
+    {"name": "q", "ptr": "q"},
+    {"name": "k", "ptr": "k"},
+    {"name": "g", "ptr": "g"},
+    {"name": "A", "ptr": "A"},
+    {"name": "s_k_h", "int": 65536},
+    {"name": "s_k_t", "int": 512},
+    {"name": "scale", "float": 1.0},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

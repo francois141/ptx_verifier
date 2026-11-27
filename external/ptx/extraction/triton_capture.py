@@ -23,7 +23,9 @@ any other file, up to `LAUNCH_FILES` of its test code's launches, smallest
 first, become `<kernel>.<i>.launch.json`. A launch file holds one `inout` array
 per tensor storage (`index`, holding `i` at `i`, for the parameters the suite
 names), the kernel's scalars, each host tensor descriptor as its TMA map, shape
-and strides, and zeros for Triton's trailing scratch pointers. The summary says
+and strides, zeros for Triton's trailing scratch pointers, and the keys the
+suite's `launch_keys` gives its size (the analyzed `cta`, a `spec` and its
+`dims`, which `races.py` checks with `volta solve`). The summary says
 how each file went. A file's earlier output directory is replaced.
 """
 
@@ -103,6 +105,8 @@ class Suite:
     capabilities: dict[str, int] = field(default_factory=dict)
     # File name -> the parameters whose arrays are `index` arrays.
     index_args: dict[str, frozenset[str]] = field(default_factory=dict)
+    # File name -> size label -> launch-file keys its launch file adds (`cta`, `spec`, `dims`).
+    launch_keys: dict[str, dict[str, dict]] = field(default_factory=dict)
     # Brings missing files into `sources`, run on the host before a file name resolves there.
     fetch: Callable[[], None] | None = None
 
@@ -242,7 +246,9 @@ def tensor_map(name: str, array: str, tma: dict) -> dict:
     return encoded
 
 
-def launch_text(summary: dict, launch: dict, ptx_params: int, description: str, index_args: frozenset[str]) -> str:
+def launch_text(
+    summary: dict, launch: dict, ptx_params: int, description: str, index_args: frozenset[str], extra: dict | None = None
+) -> str:
     """One launch as a Volta launch file; raises `Unlaunchable`."""
     if summary["num_ctas"] > 1:
         raise Unlaunchable(f"a cluster of {summary['num_ctas']} CTAs")
@@ -321,7 +327,8 @@ def launch_text(summary: dict, launch: dict, ptx_params: int, description: str, 
         "  ],",
         '  "params": [',
         ",\n".join(f"    {row(p)}" for p in params),
-        "  ]",
+        "  ]" + ("," if extra else ""),
+        *(f"  {json.dumps(k)}: {json.dumps(v)}" + ("," if i + 1 < len(extra) else "") for i, (k, v) in enumerate((extra or {}).items())),
         "}",
     ]
     return "\n".join(lines) + "\n"
@@ -360,7 +367,8 @@ class Recorder:
                 shapes = ", ".join(f"{n} {a['dtype']}{a['shape']}" for n, a in launch["args"].items() if "storage" in a)
                 description = f"{self.suite.name} {self.source.name}: {variant.summary['kernel']} on {shapes or 'scalars'}"
                 try:
-                    text = launch_text(variant.summary, launch, ptx_params, description, self.index_args)
+                    extra = self.suite.launch_keys.get(self.source.name, {}).get(name)
+                    text = launch_text(variant.summary, launch, ptx_params, description, self.index_args, extra)
                 except Unlaunchable as why:
                     unlaunchable.append(f"{variant.stem}.{name}: {why}")
                     continue

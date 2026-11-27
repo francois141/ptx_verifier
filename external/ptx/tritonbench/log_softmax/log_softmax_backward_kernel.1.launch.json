@@ -1,0 +1,21 @@
+{
+  "description": "TritonBench log_softmax.py: log_softmax_backward_kernel on out_ptr float32[2, 8, 128, 64], out_grad_ptr float32[2, 8, 128, 64], in_grad_ptr float32[2, 8, 128, 64]",
+  "kernel": "log_softmax_backward_kernel",
+  "block": 128,
+  "grid": [2048, 1, 1],
+  "dynamic_shared_bytes": 8,
+  "arrays": [
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [2, 8, 128, 64]},
+    {"name": "out_grad_ptr", "kind": "inout", "dtype": "f32", "shape": [2, 8, 128, 64]},
+    {"name": "in_grad_ptr", "kind": "inout", "dtype": "f32", "shape": [2, 8, 128, 64]}
+  ],
+  "params": [
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "out_grad_ptr", "ptr": "out_grad_ptr"},
+    {"name": "in_grad_ptr", "ptr": "in_grad_ptr"},
+    {"name": "M", "int": 2048},
+    {"name": "N", "int": 64},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "description": "TritonBench fused_recurrent_retention.py: fused_recurrent_retention_fwd_kernel on q float32[2, 4, 8, 16], k float32[2, 4, 8, 16], v float32[2, 4, 8, 16], o float32[1, 2, 4, 8, 16], initial_state float32[2, 4, 16, 16]",
+  "kernel": "fused_recurrent_retention_fwd_kernel",
+  "block": 32,
+  "grid": [1, 1, 8],
+  "dynamic_shared_bytes": 64,
+  "arrays": [
+    {"name": "q", "kind": "inout", "dtype": "f32", "shape": [2, 4, 8, 16]},
+    {"name": "k", "kind": "inout", "dtype": "f32", "shape": [2, 4, 8, 16]},
+    {"name": "v", "kind": "inout", "dtype": "f32", "shape": [2, 4, 8, 16]},
+    {"name": "o", "kind": "inout", "dtype": "f32", "shape": [1, 2, 4, 8, 16]},
+    {"name": "initial_state", "kind": "inout", "dtype": "f32", "shape": [2, 4, 16, 16]}
+  ],
+  "params": [
+    {"name": "q", "ptr": "q"},
+    {"name": "k", "ptr": "k"},
+    {"name": "v", "ptr": "v"},
+    {"name": "o", "ptr": "o"},
+    {"name": "initial_state", "ptr": "initial_state"},
+    {"name": "s_qk_h", "int": 128},
+    {"name": "s_qk_t", "int": 16},
+    {"name": "s_vo_h", "int": 128},
+    {"name": "s_vo_t", "int": 16},
+    {"name": "B", "int": 2},
+    {"name": "H", "int": 4},
+    {"name": "T", "int": 8},
+    {"name": "scale", "float": 0.25},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

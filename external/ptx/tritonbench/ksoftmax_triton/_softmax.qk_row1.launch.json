@@ -1,0 +1,27 @@
+{
+  "description": "TritonBench ksoftmax_triton.py: _softmax on Y float32[1, 2, 8], X float32[1, 2, 8], M float32[2, 8]",
+  "kernel": "_softmax",
+  "block": 32,
+  "grid": [1, 2, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "Y", "kind": "inout", "dtype": "f32", "shape": [1, 2, 8]},
+    {"name": "X", "kind": "inout", "dtype": "f32", "shape": [1, 2, 8]},
+    {"name": "M", "kind": "inout", "dtype": "f32", "shape": [2, 8]}
+  ],
+  "params": [
+    {"name": "Y", "ptr": "Y"},
+    {"name": "X", "ptr": "X"},
+    {"name": "M", "ptr": "M"},
+    {"name": "stride_ym", "int": 16},
+    {"name": "stride_yn", "int": 8},
+    {"name": "stride_xm", "int": 16},
+    {"name": "stride_xn", "int": 8},
+    {"name": "K", "int": 8},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ],
+  "cta": [0, 1, 0],
+  "spec": "../specs/ksoftmax_qk.spec",
+  "dims": {"B": 1, "R": 2, "K": 8, "B0": 0, "R0": 1}
+}

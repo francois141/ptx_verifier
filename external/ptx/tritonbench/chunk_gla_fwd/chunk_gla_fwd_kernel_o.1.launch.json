@@ -1,0 +1,32 @@
+{
+  "description": "TritonBench chunk_gla_fwd.py: chunk_gla_fwd_kernel_o on q float32[2, 2, 128, 256], v float32[2, 2, 128, 64], g float32[2, 2, 128, 256], h float32[2, 2, 256, 64], o float32[2, 2, 128, 64], A float32[2, 2, 128, 16]",
+  "kernel": "chunk_gla_fwd_kernel_o",
+  "block": 32,
+  "grid": [2, 8, 4],
+  "dynamic_shared_bytes": 6144,
+  "arrays": [
+    {"name": "q", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 256]},
+    {"name": "v", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 64]},
+    {"name": "g", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 256]},
+    {"name": "h", "kind": "inout", "dtype": "f32", "shape": [2, 2, 256, 64]},
+    {"name": "o", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 64]},
+    {"name": "A", "kind": "inout", "dtype": "f32", "shape": [2, 2, 128, 16]}
+  ],
+  "params": [
+    {"name": "q", "ptr": "q"},
+    {"name": "v", "ptr": "v"},
+    {"name": "g", "ptr": "g"},
+    {"name": "h", "ptr": "h"},
+    {"name": "o", "ptr": "o"},
+    {"name": "A", "ptr": "A"},
+    {"name": "s_k_h", "int": 32768},
+    {"name": "s_k_t", "int": 256},
+    {"name": "s_v_h", "int": 8192},
+    {"name": "s_v_t", "int": 64},
+    {"name": "s_h_h", "int": 16384},
+    {"name": "s_h_t", "int": 64},
+    {"name": "scale", "float": 1.0},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

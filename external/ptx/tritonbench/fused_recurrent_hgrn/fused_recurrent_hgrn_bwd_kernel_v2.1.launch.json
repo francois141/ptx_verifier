@@ -1,0 +1,25 @@
+{
+  "description": "TritonBench fused_recurrent_hgrn.py: fused_recurrent_hgrn_bwd_kernel on g float32[1, 2, 2, 2], o float32[1, 2, 2, 2], dx float32[1, 2, 2, 2], dg float32[1, 2, 2, 2], do float32[1, 2, 2, 2], h0 float32[1, 2, 2]",
+  "kernel": "fused_recurrent_hgrn_bwd_kernel",
+  "block": 32,
+  "grid": [1, 2, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "g", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "o", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "dx", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "dg", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2, 2]},
+    {"name": "do", "kind": "inout", "dtype": "f32", "len": 1},
+    {"name": "h0", "kind": "inout", "dtype": "f32", "shape": [1, 2, 2]}
+  ],
+  "params": [
+    {"name": "g", "ptr": "g"},
+    {"name": "o", "ptr": "o"},
+    {"name": "dx", "ptr": "dx"},
+    {"name": "dg", "ptr": "dg"},
+    {"name": "do", "ptr": "do"},
+    {"name": "h0", "ptr": "h0"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

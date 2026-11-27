@@ -50,6 +50,22 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
                     ["=sm_100a/FusedGEMMAddSiLUFloat16Kernel/kernel_1"]},
     "TileLang": {"warp-specialize copy race (2)": ["matmul_warp_specialize_copy_gemm_0_1"],
                  "tcgen05 pipeliner stage-reuse race (2b)": ["gemm_sm100/matmul_kernel"]},
+    # tritonbench/bugs.txt's numbering; each reproducing size has a control size that verifies
+    "Triton": {"relu, softmax, layer-norm and masked-softmax outputs unwritten or wrong (TB-1 to TB-4)":
+               ["relu_triton_kernel/", "triton_softmax/", "layer_norm_liger/", "ksoftmax_triton/"],
+               "kldiv chunk sums stored past the output (TB-5)": ["kldiv_triton/"],
+               "l2-norm output indexed with the input's row stride (TB-6, TB-7)":
+               ["l2_norm_triton1/", "l2_norm_triton2/"],
+               "nested3 pointer walk out of bounds, overlapping stores (TB-8)":
+               ["nested_loops_processing/nested3"],
+               "chunk_gla A_intra allocated with BT rows, not T (TB-9)":
+               ["chunk_gla_fwd/chunk_gla_fwd_A_kernel_intra_sub_intra_merge"],
+               "backward kernels read a stride-0 output gradient as dense (TB-10 to TB-13)":
+               ["chunk_linear_attn/chunk_linear_attn_bwd", "fused_recurrent_hgrn/fused_recurrent_hgrn_bwd",
+                "fused_recurrent_retention/fused_recurrent_retention_bwd",
+                "parallel_attention/parallel_rebased_bwd"],
+               "attention block pointers without boundary checks (TB-14)":
+               ["=attention_fwd_triton1/attention_fwd_kernel_v5"]},
 }
 
 # Triaged rejections that are not findings, per row: category -> kernel markers (as FINDINGS).
@@ -68,6 +84,10 @@ REJECTIONS = {
                      "gap": ["mhcHcHeadApply"]},
     "ThunderKittens": {"open": ["level_07", "level_08"]},
     "TileLang": {"benign": ["gemv/naive_gemv", "gemv/splitk_gemv_vectorized_tvm"]},
+    # tritonbench/bugs.txt's B-1: replicas store a reduction's one value to one shared slot
+    "Triton": {"benign": ["chunk_gla_fwd/chunk_gla_fwd_A_kernel_intra_sub_intra",
+                          "fused_recurrent_retention/fused_recurrent_retention_fwd",
+                          "parallel_attention/parallel_rebased_fwd"]},
     "Gluon": {"benign": ["04-tma/", "06-tcgen05/tmem_example", "10-tcgen05-copy/tcgen05_copy"],
               "open": ["06-tcgen05/blocked_matmul", "07-persistence/",
                        "11-tcgen05-mma-scaled/mma_scaled_tcgen05_copy",

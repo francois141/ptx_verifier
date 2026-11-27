@@ -1,0 +1,34 @@
+{
+  "description": "TritonBench parallel_attention.py: parallel_rebased_bwd_kernel on q float32[2, 4, 128, 64], k float32[2, 4, 128, 64], v float32[2, 4, 128, 64], do float32[2, 4, 128, 64], dz float32[2, 4, 128], dq float32[1, 2, 4, 128, 64], dk float32[1, 2, 4, 128, 64], dv float32[1, 2, 4, 128, 64]",
+  "kernel": "parallel_rebased_bwd_kernel",
+  "block": 128,
+  "grid": [1, 2, 8],
+  "dynamic_shared_bytes": 57472,
+  "arrays": [
+    {"name": "q", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "k", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "v", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "do", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128, 64]},
+    {"name": "dz", "kind": "inout", "dtype": "f32", "shape": [2, 4, 128]},
+    {"name": "dq", "kind": "inout", "dtype": "f32", "shape": [1, 2, 4, 128, 64]},
+    {"name": "dk", "kind": "inout", "dtype": "f32", "shape": [1, 2, 4, 128, 64]},
+    {"name": "dv", "kind": "inout", "dtype": "f32", "shape": [1, 2, 4, 128, 64]}
+  ],
+  "params": [
+    {"name": "q", "ptr": "q"},
+    {"name": "k", "ptr": "k"},
+    {"name": "v", "ptr": "v"},
+    {"name": "do", "ptr": "do"},
+    {"name": "dz", "ptr": "dz"},
+    {"name": "dq", "ptr": "dq"},
+    {"name": "dk", "ptr": "dk"},
+    {"name": "dv", "ptr": "dv"},
+    {"name": "s_qk_h", "int": 8192},
+    {"name": "s_qk_t", "int": 64},
+    {"name": "s_vo_h", "int": 8192},
+    {"name": "s_vo_t", "int": 64},
+    {"name": "scale", "float": 0.125},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

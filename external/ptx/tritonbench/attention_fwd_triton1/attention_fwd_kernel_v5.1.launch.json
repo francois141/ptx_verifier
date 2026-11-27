@@ -1,0 +1,28 @@
+{
+  "description": "TritonBench attention_fwd_triton1.py: attention_fwd_kernel on q float32[2, 8, 1, 128], k float32[2, 8, 1, 128], v float32[2, 8, 1, 128], h float32[2, 8, 128, 128], o float32[2, 8, 1, 128]",
+  "kernel": "attention_fwd_kernel",
+  "block": 128,
+  "grid": [16, 1, 1],
+  "dynamic_shared_bytes": 49152,
+  "arrays": [
+    {"name": "q", "kind": "inout", "dtype": "f32", "shape": [2, 8, 1, 128]},
+    {"name": "k", "kind": "inout", "dtype": "f32", "shape": [2, 8, 1, 128]},
+    {"name": "v", "kind": "inout", "dtype": "f32", "shape": [2, 8, 1, 128]},
+    {"name": "h", "kind": "inout", "dtype": "f32", "shape": [2, 8, 128, 128]},
+    {"name": "o", "kind": "inout", "dtype": "f32", "shape": [2, 8, 1, 128]}
+  ],
+  "params": [
+    {"name": "q", "ptr": "q"},
+    {"name": "k", "ptr": "k"},
+    {"name": "v", "ptr": "v"},
+    {"name": "h", "ptr": "h"},
+    {"name": "o", "ptr": "o"},
+    {"name": "s_qh", "int": 128},
+    {"name": "s_qt", "int": 128},
+    {"name": "s_hh", "int": 16384},
+    {"name": "s_ht", "int": 128},
+    {"name": "scale", "float": 0.08838834764831845},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}
