@@ -492,13 +492,10 @@ CASES = (
     cumsum("cumsum_f32_100", 2, 100, cta=1),
     cumsum("cumsum_bf16_500", 1, 500, cta=0, dtype="bf16"),
     cumsum("cumsum_f32_1000", 1, 1000, cta=0),
-    # Volta gap, not a kernel bug: the 256 x 8 16-bit instantiation reduces each thread's items
-    # with `add.bf16x2`/`add.f16x2` and takes the low half by `and.b32 %r, %pair, 65535` before
-    # the warp scan's shfl (cumsumLastDim.ptx, cub's ThreadReduce); Volta aborts on a packed pair
-    # read as a 32-bit scalar. Its true verdict is expected to be ACCEPT (the 32 x 1 / 64 x 2 16-bit
-    # and the f32 256 x 8 instantiations are ACCEPTed).
-    cumsum("cumsum_f16_2048", 2, 2048, cta=1, dtype="f16", check="UNKNOWN"),
-    cumsum("cumsum_bf16_2048", 2, 2048, cta=1, dtype="bf16", check="UNKNOWN"),
+    # The 256 x 8 16-bit instantiation: each thread reduces its items with `add.bf16x2`/`add.f16x2`
+    # and takes the low half by `and.b32 %r, %pair, 65535` and `cvt.u16.u32` (cub's ThreadReduce).
+    cumsum("cumsum_f16_2048", 2, 2048, cta=1, dtype="f16"),
+    cumsum("cumsum_bf16_2048", 2, 2048, cta=1, dtype="bf16"),
     cumsum("cumsum_f16_100", 2, 100, cta=1, dtype="f16"),
     cumsum("cumsum_f16_64", 1, 64, cta=0, dtype="f16"),
     # Volta incompleteness, not a kernel bug: race free, and the numeric oracle does not refute any
