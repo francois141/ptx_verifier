@@ -1342,6 +1342,9 @@ impl<'p> Interpreter<'p> {
                     // `cvt.u32.u64`-style truncation of a packed pair keeps
                     // its low lane, exactly.
                     Value::Pair(lo, _) if truncates_pair => Value::Scalar(lo),
+                    // `cvt.u16.u32` of a 16-bit pair (cub's scan of a packed f16 sum) keeps
+                    // its low half (PTX ISA 9.7.9.21: integer narrowing truncates).
+                    Value::Pair(lo, _) if truncates_quad => Value::Scalar(lo),
                     Value::Quad(b0, b1, _, _) if truncates_quad => Value::Pair(b0, b1),
                     Value::Quad(l0, _, _, _) if truncates_wide_quad && dst_ty.bits() == 16 => {
                         Value::Scalar(l0)

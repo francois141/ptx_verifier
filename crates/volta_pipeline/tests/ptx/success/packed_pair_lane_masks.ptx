@@ -1,0 +1,32 @@
+// A 32-bit word of two 16-bit halves, split by masks and narrowing (cub's scan of a packed f16
+// sum, `and.b32 %r, %pair, 65535` then `cvt.u16.u32`): `and 0xffff` keeps the low half,
+// `and 0xffff0000` then `shr 16` the high one, and `or` of the disjoint lanes rebuilds the
+// word. out[0], out[1] = in[0], in[1]; out[2], out[3] = in[1], in[0].
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<9>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.b32 %r1, [%rd1];
+    and.b32 %r2, %r1, 65535;
+    cvt.u16.u32 %rs1, %r2;
+    st.global.b16 [%rd2], %rs1;
+    and.b32 %r3, %r1, -65536;
+    shr.u32 %r4, %r3, 16;
+    cvt.u16.u32 %rs2, %r4;
+    st.global.b16 [%rd2+2], %rs2;
+    shl.b32 %r5, %r2, 16;
+    or.b32 %r6, %r5, %r4;
+    st.global.b32 [%rd2+4], %r6;
+    ret;
+}

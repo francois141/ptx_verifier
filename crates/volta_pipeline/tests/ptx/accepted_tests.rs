@@ -2545,6 +2545,33 @@ fn test_float_bit_comparisons() {
     analyze!("success/float_bit_comparisons", config);
 }
 
+/// Lane masks, shifts and narrowing of a 16-bit pair keep exact halves.
+#[test]
+fn test_packed_pair_lane_masks() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 4,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/packed_pair_lane_masks", config);
+}
+
 /// CUTLASS's skip-wait: the one-shot `try_wait` returns false, the blocking wait orders the
 /// exchange, and the run records the assumption.
 #[test]

@@ -893,9 +893,9 @@ impl<'p> Interpreter<'p> {
         Ok(a)
     }
 
-    /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise with
-    /// exact bit semantics (the nvcc/Triton `f32x2` assembly idiom), and 32-bit
-    /// shifts of an `f16x2` pair by one half (Triton's split of a 4-byte load).
+    /// 64- and 32-bit bitwise ops with a packed-pair operand, evaluated lane-wise with
+    /// exact bit semantics (the nvcc/Triton `f32x2` idiom; an `f16x2` pair's `and 0xffff`
+    /// lane extraction), and shifts by one half (Triton's split of a 4-byte load).
     /// `None` if no operand is a pair; errors on inexact patterns.
     pub(in crate::eval) fn pair_bitwise_binop(
         &mut self,
@@ -908,8 +908,7 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<Option<Value>> {
         let shift = matches!(op, BinOp::Shl | BinOp::Shr);
         let supported = match ty.bits() {
-            64 => shift || matches!(op, BinOp::And | BinOp::Or),
-            32 => shift,
+            64 | 32 => shift || matches!(op, BinOp::And | BinOp::Or),
             _ => false,
         };
         if !supported {
@@ -921,20 +920,23 @@ impl<'p> Interpreter<'p> {
             return Ok(None);
         }
         let unsupported = |what: String| EvalError::Unsupported { pc, what };
-        // A concrete 64-bit scalar splits into two concrete lanes; anything
-        // else alongside a pair has no lane reading.
+        let lane_bits = ty.bits() / 2;
+        let lane_mask = (1i64 << lane_bits) - 1;
+        // A concrete scalar splits into two concrete lanes (16-bit ones of a 32-bit pair: FA2's
+        // and.b32 0xffff0000, cub's and.b32 0xffff); anything else beside a pair has no lanes.
         let lanes = |this: &mut Self, v: Value| -> EvalResult<(ExprId, ExprId)> {
             match v {
                 Value::Pair(lo, hi) => Ok((lo, hi)),
                 Value::Scalar(e) => match this.arena.as_int_const(e) {
                     Some(c) => {
-                        let lo = this.arena.int(c & 0xFFFF_FFFF);
-                        let hi = this.arena.int((c >> 32) & 0xFFFF_FFFF);
+                        let lo = this.arena.int(c & lane_mask);
+                        let hi = this.arena.int((c >> lane_bits) & lane_mask);
                         Ok((lo, hi))
                     }
-                    None => Err(unsupported(
-                        "symbolic 64-bit scalar combined bitwise with a packed pair".to_string(),
-                    )),
+                    None => Err(unsupported(format!(
+                        "symbolic {}-bit scalar combined bitwise with a packed pair",
+                        ty.bits()
+                    ))),
                 },
                 Value::Quad(..) => Err(unsupported(
                     "packed byte-quad combined bitwise with a packed pair".to_string(),
@@ -945,7 +947,7 @@ impl<'p> Interpreter<'p> {
             }
         };
         let is_zero = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0);
-        let is_all_ones = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0xFFFF_FFFF);
+        let is_all_ones = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(lane_mask);
         match op {
             BinOp::Shl | BinOp::Shr => {
                 let Value::Pair(lo, hi) = a else {
@@ -985,10 +987,10 @@ impl<'p> Interpreter<'p> {
                             (Some(_), Some(_)) => {
                                 self.eval_binop(t, pc, BinOp::Or, ScalarType::U32, x, y)
                             }
-                            _ => Err(unsupported(
-                                "or.b64 of two packed pairs with overlapping symbolic lanes"
-                                    .to_string(),
-                            )),
+                            _ => Err(unsupported(format!(
+                                "or.b{} of two packed pairs with overlapping symbolic lanes",
+                                ty.bits()
+                            ))),
                         }
                     }
                 };
@@ -1011,9 +1013,10 @@ impl<'p> Interpreter<'p> {
                             (Some(_), Some(_)) => {
                                 self.eval_binop(t, pc, BinOp::And, ScalarType::U32, x, y)
                             }
-                            _ => Err(unsupported(
-                                "and.b64 masking inside a packed pair's lane".to_string(),
-                            )),
+                            _ => Err(unsupported(format!(
+                                "and.b{} masking inside a packed pair's lane",
+                                ty.bits()
+                            ))),
                         }
                     }
                 };
