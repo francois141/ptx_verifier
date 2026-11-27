@@ -21,22 +21,23 @@ from pathlib import Path
 PTX_ROOT = Path(__file__).resolve().parent
 OUTPUT = PTX_ROOT / "output"
 
-# Volta-found, triaged findings per framework (volta_findings.txt). "latent" are UB per the ISA
-# that likely works on today's hardware; "known" were reported elsewhere first.
+# Volta-found findings per framework (volta_findings.txt), each independently verified
+# (bugs_PTX/verification/SUMMARY.md). "latent": real per the ISA or memory model, unlikely to
+# misbehave on today's hardware; "known": reported elsewhere first (upstream or sentryward).
 FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or sweep stem) it covers
-    "vllm": {"hadacore cp.async race (4c)": ["hadamard_transform_kernel"],
+    "vllm": {"hadacore cp.async race, latent (4c)": ["hadamard_transform_kernel"],
              "fused-A GEMM mbarrier re-init, known (4f)": ["csrc/dsv3_fused_a_gemm.cu:"]},
-    "TensorRT-LLM": {"in-place MLA merge softmax-stats race (4e)": ["mergeAttnWithSoftmaxKernel"]},
-    "flashinfer": {"MergeStateInPlace LSE race (4d)": ["MergeStateInPlaceKernel"]},
-    "flash-attention": {"split-KV combine out-of-bounds LSE write (4b)": ["splitkv_combine"]},
+    "TensorRT-LLM": {"in-place MLA merge softmax-stats race, latent (4e)": ["mergeAttnWithSoftmaxKernel"]},
+    "flashinfer": {"MergeStateInPlace LSE race, latent (4d)": ["MergeStateInPlaceKernel"]},
+    "flash-attention": {"split-KV combine out-of-bounds LSE write, known (4b)": ["splitkv_combine"]},
     "DeepGEMM": {"tcgen05.ld lane-quadrant UB, latent (4)": ["sm100_"]},
-    "Gluon": {"missing tcgen05 fences between cross-warp st and mma (1)":
+    "Gluon": {"missing tcgen05 fences between cross-warp st and mma, latent (1)":
               ["06-tcgen05/small_mma", "11-tcgen05-mma-scaled/mma_scaled_packed_block",
                "11-tcgen05-mma-scaled/mma_scaled_contig", "11-tcgen05-mma-scaled/simple_mma_scaled"],
-              "CLC get_first_ctaid on a declined response, latent (7)":
+              "CLC get_first_ctaid on a declined response, known (7)":
               ["=12-cluster-launch-control/persistent_matmul_kernel"]},
     "ThunderKittens": {"level_06 parity-aliasing hang, latent (5)": ["level_06"]},
-    "AI compiler": {"Mamba2ChunkScanForward missing fence.proxy.async (3)":
+    "AI compiler": {"Mamba2ChunkScanForward missing fence.proxy.async, latent (3)":
                     ["Mamba2ChunkScanForward"],
                     "FusedGEMMAddSiLU parity-aliasing hang, latent (6)":
                     ["=sm_100a/FusedGEMMAddSiLUFloat16Kernel/kernel_1"]},
