@@ -15,9 +15,14 @@ fn log2e_split() -> Rational {
     Rational::from((12102203, 8388608)) + Rational::from((338819, 17592186044416u64))
 }
 
-/// The largest denominator a recovered coefficient `q` may have: the argument's own constants
-/// (`-1`, `1.702`) are short, while a coefficient with only `H` (an f32-rounded `log2(e)`, 1e-8
-/// off) divides into a ~2^70 denominator and stays unmatched.
+/// A coefficient `c` of the sequence carries `L`'s 2^-44 scale, so its denominator is at least
+/// this long; a product of two plain `ex2`s (FlashInfer's online merge, `c = 1`) has a short one
+/// and is no accurate `expf`, though `1 / (H + L)` is a short-enough rational itself.
+const MIN_COEFFICIENT_DENOMINATOR_BITS: u32 = 40;
+
+/// The longest denominator a recovered constant `q` may have: the argument's own constants (`-1`,
+/// `1.702f`, an f64 launch parameter's 2^-49) fit, while a coefficient with only `H` (an
+/// f32-rounded `log2(e)`, 1e-8 off), or an f64 constant not times `H + L`, divides into ~2^70+.
 const MAX_DENOMINATOR_BITS: u32 = 64;
 
 /// `exp(sum q_i y_i)`.
@@ -67,6 +72,9 @@ pub(super) fn accurate_exp(arena: &ExprArena, id: ExprId) -> Option<AccurateExp>
     for (y, c) in form.terms {
         if c == 0 {
             continue;
+        }
+        if c.denom().significant_bits() < MIN_COEFFICIENT_DENOMINATOR_BITS {
+            return None;
         }
         let q = c / &split;
         if q.denom().significant_bits() > MAX_DENOMINATOR_BITS {

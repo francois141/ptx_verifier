@@ -638,3 +638,21 @@ fn test_cuda_accurate_expf_of_a_scaled_argument() {
         }
     );
 }
+
+/// `ex2(x) * ex2(x)` is no accurate `expf`: it stays lowering's `exp(x / f32(log2 e))` squared.
+#[test]
+fn test_ex2_product_is_not_accurate_expf() {
+    let kernel = Kernel {
+        ptx: ptx!(parse "negative_equivalence/ex2_product_is_not_accurate_expf"),
+        config: f32_config(1, 1, 1),
+    };
+    let spec = "dim N; array in[N]; array out[N]; \
+                out[i] = exp(in[i] * 8388608 / 12102203) * exp(in[i] * 8388608 / 12102203);";
+    assert_eq!(
+        against_spec("ex2_product_is_not_accurate_expf", &kernel, spec),
+        volta_pipeline::EquivalenceVerdict::Equivalent {
+            checked: 1,
+            total: 1
+        }
+    );
+}
