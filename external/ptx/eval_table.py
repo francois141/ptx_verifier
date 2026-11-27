@@ -24,7 +24,8 @@ OUTPUT = PTX_ROOT / "output"
 # Volta-found, triaged findings per framework (volta_findings.txt). "latent" are UB per the ISA
 # that likely works on today's hardware; "known" were reported elsewhere first.
 FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or sweep stem) it covers
-    "vllm": {"hadacore cp.async race (4c)": ["hadamard_transform_kernel"]},
+    "vllm": {"hadacore cp.async race (4c)": ["hadamard_transform_kernel"],
+             "fused-A GEMM mbarrier re-init, known (4f)": ["csrc/dsv3_fused_a_gemm.cu:"]},
     "TensorRT-LLM": {"in-place MLA merge softmax-stats race (4e)": ["mergeAttnWithSoftmaxKernel"]},
     "flashinfer": {"MergeStateInPlace LSE race (4d)": ["MergeStateInPlaceKernel"]},
     "flash-attention": {"split-KV combine out-of-bounds LSE write (4b)": ["splitkv_combine"]},
@@ -76,6 +77,8 @@ def registry_verdicts(framework: str) -> dict[str, set[str]]:
     spec.loader.exec_module(module)
     kernels = defaultdict(set)
     for case in module.CASES:
+        if "patched/" in case.unit:  # a fixed copy of a kernel (a finding's control), not shipped
+            continue
         symbol = case.symbol if isinstance(case.symbol, str) else "+".join(case.symbol)
         kernels[f"{case.unit}:{symbol}"].add(case.check)
     return kernels
