@@ -76,6 +76,9 @@ class Suite:
     torch: bool = False
     std: str = "c++17"
     exclude: tuple[str, ...] = field(default=())
+    # A repo directory of instantiation units copied into the checkout's `volta_units/` first
+    # (header-only libraries such as FlashInfer, whose own units need its JIT bindings).
+    local_units: str = ""
 
 
 CUTLASS_INCLUDES = ("include", "tools/util/include", "examples/common")
@@ -124,6 +127,14 @@ SUITES = [
         exclude=("csrc/rocm/", "csrc/cpu/", "custom_all_reduce", "custom_all_gather"),
     ),
     Suite(
+        "flashinfer",
+        ("volta_units/*.cu",),
+        ("include", "csrc", "3rdparty/cutlass/include", "3rdparty/cccl/libcudacxx/include"),
+        ("-DFLASHINFER_ENABLE_BF16", "-DFLASHINFER_ENABLE_F16"),
+        std="c++17",
+        local_units="external/ptx/flashinfer/units",
+    ),
+    Suite(
         "TensorRT-LLM",
         ("cpp/tensorrt_llm/kernels/*.cu",),
         ("cpp", "cpp/include", "../cutlass/include", "../cutlass/tools/util/include"),
@@ -136,6 +147,11 @@ SUITES = [
 
 def units_of(suite: Suite) -> list[Path]:
     root = SOURCES_DIR / suite.framework
+    if suite.local_units and root.is_dir():
+        target = root / "volta_units"
+        target.mkdir(exist_ok=True)
+        for unit in (REPO_ROOT / suite.local_units).glob("*.cu"):
+            (target / unit.name).write_text(unit.read_text())
     found = {p for pattern in suite.units for p in root.glob(pattern)}
     return sorted(p for p in found if not any(x in str(p.relative_to(root)) for x in suite.exclude))
 
