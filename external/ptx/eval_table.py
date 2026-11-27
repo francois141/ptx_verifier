@@ -34,6 +34,10 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
               "CLC get_first_ctaid on a declined response, latent (7)":
               ["=12-cluster-launch-control/persistent_matmul_kernel"]},
     "ThunderKittens": {"level_06 parity-aliasing hang, latent (5)": ["level_06"]},
+    "AI compiler": {"Mamba2ChunkScanForward missing fence.proxy.async (3)":
+                    ["Mamba2ChunkScanForward"],
+                    "FusedGEMMAddSiLU parity-aliasing hang, latent (6)":
+                    ["=sm_100a/FusedGEMMAddSiLUFloat16Kernel/kernel_1"]},
     "TileLang": {"warp-specialize copy race, known (2)": ["matmul_warp_specialize_copy_gemm_0_1"],
                  "tcgen05 pipeliner stage-reuse race, known (2b)": ["gemm_sm100/matmul_kernel"]},
 }
@@ -51,6 +55,7 @@ ROWS = [  # (table row, case registry, race sweep csv)
     ("Triton", None, "tritonbench"),
     ("Gluon", None, "gluon"),
     ("vLLM", "vllm", None),
+    ("AI compiler", None, "ai_compiler"),  # LLM-written PTX (sm_100a, sm_90a, sm_89), not a framework
 ]
 FINDING_KEYS = {"FlashAttention": "flash-attention", "vLLM": "vllm", "FlashInfer": "flashinfer"}
 # DeepGEMM's three kernels are run by hand from external/ptx/deepgemm/ (no registry yet).
