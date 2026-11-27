@@ -230,7 +230,12 @@ float operation, the comparison constant is read as a float of the same width an
 `|x|`: bit equality is value equality except for NaN (outside the model) and the two zeros, which
 the reals identify. Test: `float_bit_comparisons` (also `(a + b) == bits(1.0)` is `(a + b) == 1`).
 
-### vote.sync, brev, bfind
+### vote.sync, redux.sync, brev, bfind
+
+`redux.sync` (PTX ISA 9.7.13.11) is a warp collective over its member mask: every member gets
+the operation over all members' values (integer add/min/max/and/or/xor, f32 min/max with `.abs`),
+symbolic values combined as add/min/max/bit expressions. Test: `redux_sync_ops`.
+
 
 `vote.sync` (PTX ISA 9.7.13.6) runs as a warp collective over its member mask: `.ballot`
 sets bit `i` for mask lane `i` whose predicate (optionally `!`-negated) holds, `.all`/`.any`/`.uni`

@@ -12,7 +12,8 @@ when a memory-conflict, proxy-order or tensor-order check fails, CHECK-FAILED
 or DEADLOCK when another check fails, UNSUPPORTED when it reaches a construct
 Volta does not model, and UNKNOWN when it has no verdict within `--timeout`.
 Every run goes through `memcap.py`, MEMORY when killed past `--mem-gb` (default 6).
-Each framework's outcomes go to `output/<framework>.csv`; the exit status is 1
+Each framework's outcomes go to `output/<framework>.csv` (a `-k` run updates only its rows);
+the exit status is 1
 if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
 """
 
@@ -225,10 +226,17 @@ def check_framework(framework: str, match: str, timeout: float, mem_gb: float, s
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     csv_path = OUTPUT_DIR / f"{framework}.csv"
+    # A filtered run (`-k`) replaces only its own launches' rows; the others are kept.
+    rows = {}
+    if match and csv_path.exists():
+        rows = {row["launch"]: row for row in csv.DictReader(csv_path.open())}
+    for r in runs:
+        rows[r.name] = {"launch": r.name, "outcome": r.outcome.value,
+                        "seconds": f"{r.seconds:.3f}", "detail": r.detail}
     with csv_path.open("w", newline="") as out:
-        writer = csv.writer(out)
-        writer.writerow(["launch", "outcome", "seconds", "detail"])
-        writer.writerows((r.name, r.outcome.value, f"{r.seconds:.3f}", r.detail) for r in runs)
+        writer = csv.DictWriter(out, fieldnames=["launch", "outcome", "seconds", "detail"])
+        writer.writeheader()
+        writer.writerows(rows[name] for name in sorted(rows))
     outcomes = [r.outcome for r in runs]
     failed = any(o in FAILURES for o in outcomes)
     counts = ", ".join(f"{outcomes.count(o)} {o.value}" for o in Outcome if o in outcomes) or "no launches"

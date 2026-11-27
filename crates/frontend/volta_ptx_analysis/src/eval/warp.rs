@@ -125,6 +125,17 @@ impl Interpreter<'_> {
             } => {
                 self.exec_vote_sync(pc, mask, members, *mode, *dst, src, *negated)?;
             }
+            LoweredInstr::ReduxSync {
+                op,
+                ty,
+                abs,
+                dst,
+                src,
+                ..
+            } => {
+                self.require_mask_lanes_live(pc, mask, members, "redux.sync")?;
+                self.exec_redux_sync(pc, members, *op, *ty, *abs, *dst, src)?;
+            }
             LoweredInstr::ShflSync {
                 mode,
                 dst,
@@ -245,7 +256,8 @@ impl Interpreter<'_> {
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
             | LoweredInstr::ElectSync { .. }
-            | LoweredInstr::VoteSync { .. } => Ok(()),
+            | LoweredInstr::VoteSync { .. }
+            | LoweredInstr::ReduxSync { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // In particular an exited address-supplying lane (`i*8 + r`) leaves
                 // row r's footprint unknowable.
@@ -476,6 +488,72 @@ impl Interpreter<'_> {
         }
     }
 
+    /// A `vote.sync`/`redux.sync` whose every mask lane in the CTA is live: each must execute it.
+    fn require_mask_lanes_live(
+        &self,
+        pc: InstrId,
+        mask: u32,
+        members: &[ThreadId],
+        what: &str,
+    ) -> EvalResult<()> {
+        let warp = members[0].0 / WARP_SIZE;
+        let in_cta = (0..WARP_SIZE)
+            .filter(|lane| mask & (1 << lane) != 0)
+            .filter(|lane| warp * WARP_SIZE + lane < self.n_threads)
+            .count();
+        if members.len() != in_cta {
+            return Err(EvalError::WarpMismatch {
+                pc,
+                reason: format!(
+                    "{what} with {} of its {in_cta} mask lanes live: every mask lane must execute it",
+                    members.len()
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// `redux.sync`: `op` over the members' values, every member getting the result.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_redux_sync(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        op: crate::ir::ReduxOp,
+        ty: ScalarType,
+        abs: bool,
+        dst: RegId,
+        src: &Operand,
+    ) -> EvalResult<()> {
+        use crate::ir::{BinOp, ReduxOp};
+        let mut result: Option<ExprId> = None;
+        for &m in members {
+            let mut v = self.scalar_operand(m, pc, src)?;
+            if abs {
+                v = self.eval_unop(pc, crate::ir::UnaryOp::Abs, ty, v)?;
+            }
+            result = Some(match result {
+                None => self.canon_operand(pc, ty, v)?,
+                Some(acc) => {
+                    let binop = match op {
+                        ReduxOp::Add => BinOp::Add,
+                        ReduxOp::Min => BinOp::Min,
+                        ReduxOp::Max => BinOp::Max,
+                        ReduxOp::And => BinOp::And,
+                        ReduxOp::Or => BinOp::Or,
+                        ReduxOp::Xor => BinOp::Xor,
+                    };
+                    self.eval_binop(m, pc, binop, ty, acc, v)?
+                }
+            });
+        }
+        let result = result.expect("a warp op has a member");
+        for &m in members {
+            self.write_reg(m, dst, Value::Scalar(result));
+        }
+        Ok(())
+    }
+
     /// `vote.sync`: the members' predicates (an exited mask lane is rejected beforehand; a
     /// mask lane past the CTA's last thread does not exist and votes nothing).
     #[allow(clippy::too_many_arguments)]
@@ -502,21 +580,7 @@ impl Interpreter<'_> {
             votes.push((m.0 % WARP_SIZE, p));
         }
         // Every mask lane must execute the vote (PTX ISA 9.7.13.6); an exited one cannot.
-        let warp = members[0].0 / WARP_SIZE;
-        let in_cta = (0..WARP_SIZE)
-            .filter(|lane| mask & (1 << lane) != 0)
-            .filter(|lane| warp * WARP_SIZE + lane < self.n_threads)
-            .count();
-        if members.len() != in_cta {
-            return Err(EvalError::WarpMismatch {
-                pc,
-                reason: format!(
-                    "vote.sync with {} of its {in_cta} mask lanes live: every mask lane must \
-                     execute it",
-                    members.len()
-                ),
-            });
-        }
+        self.require_mask_lanes_live(pc, mask, members, "vote.sync")?;
         let result = match mode {
             VoteMode::Ballot => {
                 let mut bits = self.arena.int(0);

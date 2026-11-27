@@ -154,6 +154,17 @@ impl BinOp {
     }
 }
 
+/// `redux.sync`'s reduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduxOp {
+    Add,
+    Min,
+    Max,
+    And,
+    Or,
+    Xor,
+}
+
 /// Unary operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
@@ -650,6 +661,18 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
+    /// `redux.sync.op.type d, a, membermask` (PTX ISA 9.7.13.11): every mask lane executes it
+    /// together and gets `op` over the members' `a`; `abs` (`.abs`, f32 min/max) takes each
+    /// value's magnitude first. `.NaN` changes nothing over the reals.
+    ReduxSync {
+        op: ReduxOp,
+        ty: crate::frontend::ast::ScalarType,
+        abs: bool,
+        dst: RegId,
+        src: Operand,
+        membermask: Operand,
+    },
+
     /// `vote.sync.{all,any,uni,ballot} d, {!}a, membermask` (PTX ISA 9.7.13.6): every mask lane
     /// executes it together; `.ballot` sets bit `i` of `d` for mask lane `i` whose predicate
     /// holds, the others reduce the members' predicates to one predicate.
@@ -1132,6 +1155,7 @@ define_instr_kinds!(
     ShflSync,
     ElectSync,
     VoteSync,
+    ReduxSync,
     Ldmatrix,
     Movmatrix,
     Mma,

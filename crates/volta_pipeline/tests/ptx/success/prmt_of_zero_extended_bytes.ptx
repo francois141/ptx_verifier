@@ -1,0 +1,26 @@
+// Two loaded bytes zero-extended by cvt.u32.u16 and interleaved by prmt 0x3340 (Triton's
+// packing of fp8 scale bytes): a zero-extended 16-bit value is a pair with a zero high half,
+// which prmt reads as the scalar it holds (one 32-bit word of the two bytes).
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.b8 %rs1, [%rd1];
+    ld.global.b8 %rs2, [%rd1+1];
+    cvt.u32.u16 %r1, %rs1;
+    cvt.u32.u16 %r2, %rs2;
+    prmt.b32 %r3, %r1, %r2, 0x3340;
+    st.global.b32 [%rd2], %r3;
+    ret;
+}

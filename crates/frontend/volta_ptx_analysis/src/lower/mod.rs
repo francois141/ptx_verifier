@@ -563,11 +563,9 @@ fn lower_parsed_instruction(
         )),
         ParsedInstruction::Other {
             kind: InstrKind::ReduxSync,
-            ..
-        } => Err(unsupported(
-            "redux.sync",
-            "redux.sync is not supported by Volta at the moment",
-        )),
+            modifiers,
+            operands,
+        } => warp::lower_redux_sync(ctx, modifiers, operands, predicate),
         ParsedInstruction::Other {
             kind: InstrKind::Stmatrix,
             modifiers,

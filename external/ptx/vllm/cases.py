@@ -1470,9 +1470,8 @@ CASES += (
     # ELTS_PER_LDG + offset] = -10000.f` (:690), a local-memory store at an address the
     # symbolic arg-max picks ("a branch on a symbolic predicate reaches Store").
     topk_gating("topk_gating_8e_top2", 8, k=2, tokens=16, check="UNKNOWN"),
-    # Volta gap: the FULL_WARP_SELECT kernel (no bias, >= 128 experts, k <= 32, :564) selects
-    # with redux.sync, which Volta does not lower (the verdict is the lowering error's).
-    topk_gating("topk_gating_128e_full_warp", 128, tokens=4, full_warp=True, check="ERROR"),
+    # The FULL_WARP_SELECT kernel (no bias, >= 128 experts, k <= 32, :564) selects with redux.sync.
+    topk_gating("topk_gating_128e_full_warp", 128, tokens=4, full_warp=True),
 )
 
 

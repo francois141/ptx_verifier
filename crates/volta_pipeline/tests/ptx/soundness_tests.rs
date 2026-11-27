@@ -493,23 +493,24 @@ fn mbarrier_tx_count_must_stay_in_the_isa_range() {
     ));
 }
 
-/// The fused sign-trick idiom once dropped its `setp` predicate write and verified this race;
-/// `redux.sync` is now unsupported, so the kernel must not reach a verdict.
+/// The fused sign-trick idiom once dropped its `setp` predicate write and verified this race:
+/// both threads' `redux.sync` results are negative, so both store `out[0]`, which must conflict.
 #[test]
 fn redux_idiom_must_not_verify_its_predicate_side_effect_race() {
     let module = ptx!(parse "soundness/redux_predicate_side_effect_race");
-    match verify(&module, Some("k"), out_config(2, 4)) {
-        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction {
-            instruction,
-            reason: Some(reason),
-        })) => {
-            assert_eq!(instruction, "redux.sync");
-            assert!(reason.contains("not supported"), "{reason}");
-        }
-        Err(other) => panic!("expected redux.sync to be unsupported, got {other:?}"),
-        Ok(verified) => panic!(
-            "expected redux.sync to be unsupported, got {:?}",
-            verified.graph.conclusion()
+    let verified =
+        verify(&module, Some("k"), out_config(2, 4)).expect("the counterexample must execute");
+    assert_eq!(
+        verified.graph.verdict(Property::MemoryConflict),
+        Verdict::Fail,
+        "both threads store out[0]; report: {:#?}",
+        verified.graph
+    );
+    assert!(
+        matches!(
+            verified.graph.conclusion(),
+            GraphConclusion::Rejected { .. }
         ),
-    }
+        "the race must reject the graph"
+    );
 }

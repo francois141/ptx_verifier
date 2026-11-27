@@ -84,6 +84,65 @@ pub(super) fn lower_elect_sync(
     Ok(())
 }
 
+/// Lower `redux.sync.op{.abs}{.NaN}.type d, a, membermask`.
+pub(super) fn lower_redux_sync(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    use crate::ir::ReduxOp;
+    const NAME: &str = "redux.sync";
+    let (mut op, mut ty, mut abs) = (None, None, false);
+    for modifier in modifiers {
+        match modifier.to_string().as_str() {
+            "sync" | "NaN" => {}
+            "abs" => abs = true,
+            "add" => op = Some(ReduxOp::Add),
+            "min" => op = Some(ReduxOp::Min),
+            "max" => op = Some(ReduxOp::Max),
+            "and" => op = Some(ReduxOp::And),
+            "or" => op = Some(ReduxOp::Or),
+            "xor" => op = Some(ReduxOp::Xor),
+            "u32" => ty = Some(ScalarType::U32),
+            "s32" => ty = Some(ScalarType::S32),
+            "b32" => ty = Some(ScalarType::B32),
+            "f32" => ty = Some(ScalarType::F32),
+            other => return Err(unsupported(NAME, format!("modifier .{other}"))),
+        }
+    }
+    let (Some(op), Some(ty)) = (op, ty) else {
+        return Err(unsupported(NAME, "missing operation or type"));
+    };
+    let bitwise = matches!(op, ReduxOp::And | ReduxOp::Or | ReduxOp::Xor);
+    let valid = match ty {
+        ScalarType::B32 => bitwise,
+        ScalarType::U32 | ScalarType::S32 => !bitwise,
+        _ => matches!(op, ReduxOp::Min | ReduxOp::Max),
+    };
+    if !valid || (abs && ty != ScalarType::F32) {
+        return Err(unsupported(NAME, format!("{op:?} on {ty:?}")));
+    }
+    let [dst, src, membermask] = operands else {
+        return Err(unsupported(NAME, "expected 3 operands"));
+    };
+    let dst = ctx.resolve_dst(dst)?;
+    let src = ctx.resolve_operand(src)?;
+    let membermask = ctx.resolve_operand(membermask)?;
+    ctx.emit(
+        LoweredInstr::ReduxSync {
+            op,
+            ty,
+            abs,
+            dst,
+            src,
+            membermask,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
 /// Lower `vote.sync.mode d, {!}a, membermask`; the source is a predicate, `!` kept apart.
 pub(super) fn lower_vote_sync(
     ctx: &mut LoweringContext,

@@ -2622,7 +2622,7 @@ fn test_brev_bfind() {
     analyze!("success/brev_bfind", config);
 }
 
-/// Two zero-extended 16-bit halves shifted and or-ed into one word store as two elements.
+/// Two zero-extended bf16 halves shifted and or-ed into one word store as two elements.
 #[test]
 fn test_packed_halves_word_store() {
     let mut config = AnalysisConfig::new((1, 1, 1));
@@ -2630,7 +2630,7 @@ fn test_packed_halves_word_store() {
         ArrayDef {
             name: "in".to_string(),
             base: 0x10000,
-            elem_width: 2,
+            elem_width: 4,
             len: 2,
             kind: ArrayKind::Input,
         },
@@ -2647,4 +2647,58 @@ fn test_packed_halves_word_store() {
         ParamValue::ArrayPtr("out".to_string()),
     ];
     analyze!("success/packed_halves_word_store", config);
+}
+
+/// `redux.sync` add/min/max/and/or/xor on integers, f32 max and max.abs, and a partial mask.
+#[test]
+fn test_redux_sync_ops() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 4,
+            len: 32,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 9,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/redux_sync_ops", config);
+}
+
+/// prmt reads a zero-extended byte (a pair with a zero high half) as the scalar it holds.
+#[test]
+fn test_prmt_of_zero_extended_bytes() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 1,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/prmt_of_zero_extended_bytes", config);
 }

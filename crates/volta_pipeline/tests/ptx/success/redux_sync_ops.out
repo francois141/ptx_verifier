@@ -1,0 +1,9 @@
+out[0] = 496
+out[1] = 0
+out[2] = 31
+out[3] = 0
+out[4] = 31
+out[5] = 0
+out[6] = max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(in[0], in[1]), in[2]), in[3]), in[4]), in[5]), in[6]), in[7]), in[8]), in[9]), in[10]), in[11]), in[12]), in[13]), in[14]), in[15]), in[16]), in[17]), in[18]), in[19]), in[20]), in[21]), in[22]), in[23]), in[24]), in[25]), in[26]), in[27]), in[28]), in[29]), in[30]), in[31])
+out[7] = max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(max(abs(in[0]), abs(in[1])), abs(in[2])), abs(in[3])), abs(in[4])), abs(in[5])), abs(in[6])), abs(in[7])), abs(in[8])), abs(in[9])), abs(in[10])), abs(in[11])), abs(in[12])), abs(in[13])), abs(in[14])), abs(in[15])), abs(in[16])), abs(in[17])), abs(in[18])), abs(in[19])), abs(in[20])), abs(in[21])), abs(in[22])), abs(in[23])), abs(in[24])), abs(in[25])), abs(in[26])), abs(in[27])), abs(in[28])), abs(in[29])), abs(in[30])), abs(in[31]))
+out[8] = 4294967192

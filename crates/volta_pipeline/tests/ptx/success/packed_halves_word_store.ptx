@@ -1,6 +1,6 @@
-// Two 16-bit halves packed into one 32-bit store (vLLM's finalizeMoeRouting and TensorRT-LLM's
-// MLA merge in bf16): cvt.u32.u16 zero-extends each half, shl 16 moves one up, or merges them.
-// The word stored to a 2-byte output is its two elements: out[0], out[1] = in[0], in[1].
+// Two bf16 halves packed into one 32-bit store (vLLM's finalizeMoeRouting and TensorRT-LLM's
+// MLA merge in bf16): cvt.rn.bf16.f32 computes each half, cvt.u32.u16 zero-extends it, shl 16
+// moves one up, or merges them. The 2-byte output's elements are the halves: in[0], in[1].
 .version 8.6
 .target sm_100a
 .address_size 64
@@ -11,13 +11,16 @@
 )
 {
     .reg .b16 %rs<3>;
+    .reg .f32 %f<3>;
     .reg .b32 %r<5>;
     .reg .b64 %rd<3>;
 
     ld.param.u64 %rd1, [k_param_0];
     ld.param.u64 %rd2, [k_param_1];
-    ld.global.b16 %rs1, [%rd1];
-    ld.global.b16 %rs2, [%rd1+2];
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd1+4];
+    cvt.rn.bf16.f32 %rs1, %f1;
+    cvt.rn.bf16.f32 %rs2, %f2;
     cvt.u32.u16 %r1, %rs1;
     cvt.u32.u16 %r2, %rs2;
     shl.b32 %r3, %r2, 16;

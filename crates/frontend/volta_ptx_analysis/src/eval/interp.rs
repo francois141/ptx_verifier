@@ -949,8 +949,17 @@ impl<'p> Interpreter<'p> {
                 selector,
             } => {
                 let selector = self.concrete_operand(t, pc, selector, "prmt selector")? as u16;
+                // A pair with a zero high half is the zero-extended scalar it holds (a
+                // `cvt.u32.u16` of a loaded byte): give the byte logic that reading.
+                let as_scalar = |this: &Self, v: Value| match v {
+                    Value::Pair(lo, hi) if this.arena.as_int_const(hi) == Some(0) => {
+                        Value::Scalar(lo)
+                    }
+                    other => other,
+                };
                 let src_a = self.operand_value(t, pc, src_a)?;
                 let src_b = self.operand_value(t, pc, src_b)?;
+                let (src_a, src_b) = (as_scalar(self, src_a), as_scalar(self, src_b));
                 let source_bytes = PrmtSelector(selector).bytes();
                 let reads_past_byte_0 = source_bytes.iter().any(|from| from.byte != 0);
 
@@ -1705,6 +1714,13 @@ impl<'p> Interpreter<'p> {
 
             LoweredInstr::VoteSync { membermask, .. } => {
                 let mask = self.concrete_operand(t, pc, membermask, "vote.sync membermask")? as u32;
+                self.block_at_warp_op(t, pc, mask)?;
+                return Ok(());
+            }
+
+            LoweredInstr::ReduxSync { membermask, .. } => {
+                let mask =
+                    self.concrete_operand(t, pc, membermask, "redux.sync membermask")? as u32;
                 self.block_at_warp_op(t, pc, mask)?;
                 return Ok(());
             }
