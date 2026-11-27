@@ -5,7 +5,7 @@ the race sweeps' outcomes (`output/<framework>.csv`, written by `races.py`).
     python3 external/ptx/eval_table.py            # markdown table on stdout
 
 A kernel is one PTX entry (a case's unit and symbol; a race-sweep launch's PTX stem). A kernel
-with a triaged finding counts under Findings only; any other is *verified* when one of its runs is ACCEPT (race free and equal to its spec) or VERIFIED/RACE-FREE
+with a failing run (not ACCEPT/VERIFIED) covered by a triaged finding counts under Findings only; any other is *verified* when one of its runs is ACCEPT (race free and equal to its spec) or VERIFIED/RACE-FREE
 (race free, no spec), *incomplete* when none is and some run stopped at a Volta gap (ABORT,
 UNKNOWN, ERROR, UNSUPPORTED, MEMORY), and otherwise rejected. Rejections are not all findings, so `FINDINGS` lists the triaged bugs
 by hand, with `bugs_PTX/volta_findings.txt`'s numbering, and `REJECTIONS` the other rejected
@@ -28,7 +28,13 @@ OUTPUT = PTX_ROOT / "output"
 FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or sweep stem) it covers
     "vllm": {"hadacore cp.async race, latent (4c)": ["hadamard_transform_kernel"],
              "fused-A GEMM mbarrier re-init, latent (4f)": ["csrc/dsv3_fused_a_gemm.cu:"]},
-    "TensorRT-LLM": {"in-place MLA merge softmax-stats race, latent (4e)": ["mergeAttnWithSoftmaxKernel"]},
+    "TensorRT-LLM": {"in-place MLA merge softmax-stats race, latent (4e)": ["mergeAttnWithSoftmaxKernel"],
+                     "fused-A GEMM generic-address arrive and mbarrier re-init, latent (8, 9)":
+                     ["dsv3FusedAGemm.cu:"],
+                     "Kimi-K3 TMEM lane quadrant and ld-before-dealloc order, latent (10, 11)":
+                     ["kimiK3AttnRes/attnResFwd.cu:"],
+                     "GroupRMSNorm shared-memory race (12)": ["groupRmsNormKernels.cu:"],
+                     "per-channel scale past the last row, latent (13)": ["preQuantScaleKernel.cu:"]},
     "flashinfer": {"MergeStateInPlace LSE race, latent (4d)": ["MergeStateInPlaceKernel"]},
     "flash-attention": {"split-KV combine out-of-bounds LSE write (4b)": ["splitkv_combine"]},
     "DeepGEMM": {"tcgen05.ld lane-quadrant UB, latent (4)": ["sm100_"]},
@@ -84,8 +90,10 @@ ROWS = [  # (table row, case registry, race sweep csv)
 ]
 FINDING_KEYS = {"FlashAttention": "flash-attention", "vLLM": "vllm", "FlashInfer": "flashinfer"}
 # DeepGEMM's three kernels are run by hand from external/ptx/deepgemm/ (no registry yet).
-MANUAL = {"DeepGEMM": {"sm100_bf16_gemm": "ACCEPT", "sm100_fp8_gemm": "VERIFIED",
-                       "sm100_mqa_logits": "UNKNOWN"}}
+# Their shipped PTX stops at the lane-quadrant finding (4); with the lane offset patched in,
+# bf16 is ACCEPT and fp8 VERIFIED.
+MANUAL = {"DeepGEMM": {"sm100_bf16_gemm": "ABORT", "sm100_fp8_gemm": "ABORT",
+                       "sm100_mqa_logits": "ABORT"}}
 
 VERIFIED = {"ACCEPT", "VERIFIED", "RACE-FREE"}
 INCOMPLETE = {"ABORT", "UNKNOWN", "ERROR", "UNSUPPORTED", "MEMORY"}
@@ -141,7 +149,8 @@ def main() -> int:
             kernels.update(sweep_verdicts(sweep))
         kernels.update({k: {v} for k, v in MANUAL.get(row, {}).items()})
         findings = FINDINGS.get(FINDING_KEYS.get(row, row), {})
-        found = {name: sorted(k for k in kernels if any(covers(m, k) for m in marks))
+        found = {name: sorted(k for k in kernels if any(covers(m, k) for m in marks)
+                              and kernels[k] - VERIFIED)
                  for name, marks in findings.items()}
         with_finding = {k for ks in found.values() for k in ks}
         triage = REJECTIONS.get(row, {})
