@@ -180,6 +180,11 @@ impl Real {
         matches!(self.repr(), RealRepr::NegInf | RealRepr::PosInf)
     }
 
+    /// Whether the real is above zero (`+inf` included).
+    pub fn is_positive(&self) -> bool {
+        self.sign() > 0
+    }
+
     /// Sign as -1 / 0 / +1 (the infinities are signed; only the rational
     /// zero has sign 0).
     fn sign(&self) -> i32 {

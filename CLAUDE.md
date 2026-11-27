@@ -150,7 +150,10 @@ and canon's rational algebra coincide by construction. Folds are exact on
 denominator always reaches canon's loud division error); ±inf folds
 only the unambiguous extended-real forms (max/min absorption, neg,
 inf±finite, inf·nonzero), undefined forms (inf−inf, 0·inf - integer or
-real zero alike - anything/0) build unfolded nodes.
+real zero alike - anything/0) build unfolded nodes. A comparison folds against an infinity when the other side is provably finite,
+and against zero when it is provably positive and finite (an exponential of a finite value,
+a positive constant, or a sum, product, `max` or `|x|` of such: a softmax denominator's
+`sum == 0`); `and`/`or` fold a constant operand.
 
 - **Atoms**: `IntConst`, `RealConst(Real)`, `BoolConst`, `Symbol(SymbolId)`, `ParamSymbol(StringId)`, `InputElement { array, index }`, `Undefined`
 - Symbol identity is typed (`SymbolRef`: `Param`/`Element`/`Machine`,
@@ -401,7 +404,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 
 - `eval/interp.rs` - `Interpreter`: its state, `new`/`run`/`finish`, single-instruction evaluation into the arena (`step`), operand/register and memory access, structured-CTA concreteness checks
 - `eval/schedule.rs` - the scheduler: run a ready thread until it blocks or exits, then fire a complete group (warp rendezvous, mbarrier phase, named barrier per the paper's Sync rule); when nothing can fire, `Interpreter::run` ends `Stuck` (deadlock). A named barrier id's first arrival pins its count for the whole run (register ids included); a later arrival naming another count aborts it with `EvalError::BarrierMismatch`, so the result is inconclusive. A warp executes an `.aligned` barrier (every `bar.*`, and `barrier.*.aligned`) as one collective: its lanes arriving at two such instructions wait at two barriers, so the generation cannot fire (a deadlock); different warps may arrive from their own instructions, and an unaligned `barrier.*` from any. Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
-- `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons, `cvt`, the `ex2`/`lg2` base-conversion folds, the packed-pair/quad bitwise ops and `shf`, and integer/width canonicalization of operands and of values crossing a register or memory width
+- `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons (a `setp.{eq,ne}.b` of a float operation against a constant compares values, the constant read as a float of its width: nvcc's `x == -INFINITY` as `bits == 0xFF800000`; `and.b32 x, 0x7fffffff` of one is `|x|`), `cvt`, the `ex2`/`lg2` base-conversion folds, the packed-pair/quad bitwise ops and `shf`, and integer/width canonicalization of operands and of values crossing a register or memory width
 - `eval/cp_async.rs` - non-bulk `cp.async`: the pending copy and its landing at a completion point
 - `eval/tcgen05.rs` - `tcgen05.mma` evaluation over the descriptors `eval/tcgen05_mma.rs` decodes, and `tcgen05.cp` (`.128x256b`, `.128x128b`, `.32x128b.warpx4`; one row per lane, the source read as an MMA operand's K-major bytes), an async op (`AsyncOpKind::Tcgen05Cp`) tracked by commits like an MMA, which a later MMA of its issuer reads without sync (`PipelineRule::CopyThenMma`)
 - `eval/tensormap_replace.rs` - `tensormap.replace` evaluation (fields kept in `eval/tensor_map_table.rs`); the graph records each replace as a write of the whole opaque 128-byte object; `fence.proxy.tensormap::generic.release`/`.acquire [map]` and `tensormap.cp_fenceproxy`'s trailing release are graph fences

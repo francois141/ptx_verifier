@@ -214,3 +214,11 @@ at the operand type (a zero-filled tile is +0, hadacore's Hadamard constants `0x
 output (FlashAttention-2's unloaded tail rows). Tests: `selp_of_packed_pairs`,
 `mma_fragment_of_a_constant_word`, `mma_fragment_of_a_zero_filled_word`, and the rejected
 `mma_fragment_of_an_unwritten_word_reaches_the_output`.
+
+### Float tests on raw bits
+
+nvcc compares floats against special values on their bits: `setp.eq.b32 x, 0xFF800000` for
+`x == -INFINITY`, `and.b32 x, 0x7fffffff` then `== 0` for `fabsf(x) == 0`. When `x` is a typed
+float operation, the comparison constant is read as a float of the same width and the mask as
+`|x|`: bit equality is value equality except for NaN (outside the model) and the two zeros, which
+the reals identify. Test: `float_bit_comparisons` (also `(a + b) == bits(1.0)` is `(a + b) == 1`).

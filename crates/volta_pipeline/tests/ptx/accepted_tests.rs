@@ -2517,3 +2517,30 @@ fn test_cluster_barrier_publishes_mbarrier_init() {
         in_out_config(2, 2)
     );
 }
+
+/// Bit-level float tests read as float comparisons, and guards on a positive sum fold away.
+#[test]
+fn test_float_bit_comparisons() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 4,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/float_bit_comparisons", config);
+}

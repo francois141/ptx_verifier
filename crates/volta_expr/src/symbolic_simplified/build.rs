@@ -517,7 +517,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_eq());
         }
         self.push(ExprNode::Eq(a, b))
@@ -536,7 +539,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_ne());
         }
         self.push(ExprNode::Ne(a, b))
@@ -555,7 +561,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_lt());
         }
         self.push(ExprNode::Lt(a, b))
@@ -574,7 +583,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_le());
         }
         self.push(ExprNode::Le(a, b))
@@ -593,7 +605,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_gt());
         }
         self.push(ExprNode::Gt(a, b))
@@ -612,7 +627,10 @@ impl ExprArena {
             }
             _ => {}
         }
-        if let Some(order) = self.order_against_infinity(a, b) {
+        if let Some(order) = self
+            .order_against_infinity(a, b)
+            .or_else(|| self.order_against_zero(a, b))
+        {
             return self.bool_val(order.is_ge());
         }
         self.push(ExprNode::Ge(a, b))
@@ -636,6 +654,41 @@ impl ExprArena {
             (Some(positive), None) if self.is_finite(b) => Some(below(positive)),
             (None, Some(positive)) if self.is_finite(a) => Some(below(positive).reverse()),
             _ => None,
+        }
+    }
+
+    /// How `a` compares with `b` when one is zero and the other provably positive (a softmax
+    /// denominator's `sum == 0` of exponentials); `None` otherwise.
+    fn order_against_zero(&self, a: ExprId, b: ExprId) -> Option<std::cmp::Ordering> {
+        let zero = |id: ExprId| match self.node(id) {
+            ExprNode::IntConst(0) => true,
+            ExprNode::RealConst(real) => real.is_zero(),
+            _ => false,
+        };
+        match (zero(a), zero(b)) {
+            (true, false) if self.is_positive(b) => Some(std::cmp::Ordering::Less),
+            (false, true) if self.is_positive(a) => Some(std::cmp::Ordering::Greater),
+            _ => None,
+        }
+    }
+
+    /// Whether `id` is positive and finite in every execution: an exponential of a finite
+    /// value, a positive finite constant, or a sum, product or maximum of such terms (a
+    /// maximum needs one positive side and a finite other).
+    fn is_positive(&self, id: ExprId) -> bool {
+        match self.node(id) {
+            ExprNode::IntConst(v) => *v > 0,
+            ExprNode::RealConst(real) => !real.is_infinite() && real.is_positive(),
+            ExprNode::Exp(x) => self.is_finite(*x),
+            ExprNode::Abs(x) => self.is_positive(*x),
+            ExprNode::Add(x, y) | ExprNode::Mul(x, y) => {
+                self.is_positive(*x) && self.is_positive(*y)
+            }
+            ExprNode::Max(x, y) => {
+                (self.is_positive(*x) && self.is_finite(*y))
+                    || (self.is_positive(*y) && self.is_finite(*x))
+            }
+            _ => false,
         }
     }
 
@@ -671,14 +724,24 @@ impl ExprArena {
     // Boolean builders
     // =================================================================
 
-    /// Logical AND.
+    /// Logical AND, folding a constant operand.
     pub fn and(&mut self, a: ExprId, b: ExprId) -> ExprId {
-        self.push(ExprNode::And(a, b))
+        match (self.as_bool(a), self.as_bool(b)) {
+            (Some(false), _) | (_, Some(false)) => self.bool_val(false),
+            (Some(true), _) => b,
+            (_, Some(true)) => a,
+            _ => self.push(ExprNode::And(a, b)),
+        }
     }
 
-    /// Logical OR.
+    /// Logical OR, folding a constant operand.
     pub fn or(&mut self, a: ExprId, b: ExprId) -> ExprId {
-        self.push(ExprNode::Or(a, b))
+        match (self.as_bool(a), self.as_bool(b)) {
+            (Some(true), _) | (_, Some(true)) => self.bool_val(true),
+            (Some(false), _) => b,
+            (_, Some(false)) => a,
+            _ => self.push(ExprNode::Or(a, b)),
+        }
     }
 
     /// Logical NOT.

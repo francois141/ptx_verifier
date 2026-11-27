@@ -1,0 +1,39 @@
+// nvcc's bit-level float tests (FlashMLA's split-KV combine): `setp.eq.b32` of a float against
+// 0xFF800000 is `== -inf`, against 0 is `== 0`, and `and.b32 x, 0x7fffffff` is |x|. Here they
+// guard a sum of exponentials, which is positive and finite, so every guard folds away: out[0]
+// is the plain sum. out[1] compares a + b against the bits of 1.0: (a + b) == 1, not
+// (a + b) == 1065353216.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<6>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %r1, [%rd1];
+    ld.global.f32 %r2, [%rd1+4];
+    ex2.approx.f32 %r3, %r1;
+    ex2.approx.f32 %r4, %r2;
+    add.f32 %r5, %r3, %r4;
+    setp.eq.b32 %p1, %r5, -8388608;
+    setp.eq.b32 %p2, %r5, 0;
+    and.b32 %r6, %r5, 2147483647;
+    setp.eq.b32 %p3, %r6, 0;
+    or.pred %p4, %p1, %p2;
+    or.pred %p4, %p4, %p3;
+    selp.f32 %r7, 0f7F800000, %r5, %p4;
+    st.global.f32 [%rd2], %r7;
+    add.f32 %r8, %r1, %r2;
+    setp.eq.b32 %p5, %r8, 1065353216;
+    selp.f32 %r9, 0f00000000, %r8, %p5;
+    st.global.f32 [%rd2+4], %r9;
+    ret;
+}

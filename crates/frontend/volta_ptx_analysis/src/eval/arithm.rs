@@ -78,7 +78,9 @@ impl<'p> Interpreter<'p> {
         }
 
         let field = match op {
-            BinOp::And => self.exponent_field(ty, a, b),
+            BinOp::And => self
+                .exponent_field(ty, a, b)
+                .or_else(|| self.float_abs_mask(ty, a, b)),
             BinOp::Sub if ty.is_integer() => self.mantissa(ty, a, b),
             BinOp::Shl => self.exponent_scale(ty, a, b),
             _ => None,
@@ -667,6 +669,74 @@ impl<'p> Interpreter<'p> {
         Some(self.arena.int(hi))
     }
 
+    /// `and.b32 x, 0x7fffffff` of a float operation `x` (nvcc's `fabsf(x) == 0` test on the
+    /// bits) is `|x|`, as lowering reads the same mask on a float-typed `and`.
+    fn float_abs_mask(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> Option<ExprId> {
+        let width = ty.bits();
+        if ty.is_float() || !matches!(width, 16 | 32 | 64) {
+            return None;
+        }
+        let magnitude = (1u64 << (width - 1)) - 1;
+        let is_mask = |e: ExprId| {
+            self.arena
+                .as_int_const(e)
+                .is_some_and(|m| mask_to(m, width) == magnitude)
+        };
+        let is_float = |e: ExprId| {
+            matches!(self.arena.ty(e), Some(volta_expr::symbolic_full::Type::Float(w))
+                if u32::from(w.0) == width)
+        };
+        let x = match (is_mask(a), is_mask(b)) {
+            (false, true) if is_float(a) => a,
+            (true, false) if is_float(b) => b,
+            _ => return None,
+        };
+        let float = self.arena.ty(x).expect("a float operation");
+        Some(self.arena.abs(float, x))
+    }
+
+    /// `setp.{eq,ne}.b32 x, imm` of a float operation `x` (nvcc's `sum == -INFINITY` as
+    /// `x == 0xFF800000`): bit equality is value equality with `imm` read as a float of the
+    /// same width, NaN aside (Volta has none); the reals' one zero stands for +0 and -0 alike.
+    fn float_bits_equality(
+        &mut self,
+        pc: InstrId,
+        cmp: CmpOp,
+        ty: ScalarType,
+        a: ExprId,
+        b: ExprId,
+    ) -> EvalResult<Option<ExprId>> {
+        if ty.is_float() || !matches!(cmp, CmpOp::Eq | CmpOp::Ne) {
+            return Ok(None);
+        }
+        let float_ty = match ty.bits() {
+            16 => ScalarType::F16,
+            32 => ScalarType::F32,
+            64 => ScalarType::F64,
+            _ => return Ok(None),
+        };
+        let is_float = |arena: &volta_expr::symbolic_full::ExprArena, e: ExprId| {
+            matches!(arena.ty(e), Some(volta_expr::symbolic_full::Type::Float(w))
+                if u32::from(w.0) == ty.bits())
+        };
+        let (value, bits) = match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
+            (None, Some(_)) if is_float(&self.arena, a) => (a, b),
+            (Some(_), None) if is_float(&self.arena, b) => (b, a),
+            _ => return Ok(None),
+        };
+        let bits = mask_to(
+            self.arena.as_int_const(bits).expect("a constant"),
+            ty.bits(),
+        );
+        let bits = self.arena.int(bits as i64);
+        let constant = super::float_bits::decode_float_bits(&mut self.arena, pc, float_ty, bits)?;
+        let ty = expr_type(float_ty);
+        Ok(Some(match cmp {
+            CmpOp::Eq => self.arena.eq(ty, value, constant),
+            _ => self.arena.ne(ty, value, constant),
+        }))
+    }
+
     pub(in crate::eval) fn eval_cmp(
         &mut self,
         pc: InstrId,
@@ -713,6 +783,10 @@ impl<'p> Interpreter<'p> {
                 }
             };
             return Ok(self.arena.bool_val(r));
+        }
+
+        if let Some(r) = self.float_bits_equality(pc, cmp, ty, a, b)? {
+            return Ok(r);
         }
 
         if let Some(below) = self.below_bits(cmp, ty, a, b) {
