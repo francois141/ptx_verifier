@@ -757,3 +757,14 @@ fn test_cluster_mbarrier_init_fence_releases_no_store() {
     );
     assert_exchange_races(&ws);
 }
+
+/// A one-shot `try_wait` that returned false acquires nothing: a load between it and the
+/// blocking wait races the other thread's store.
+#[test]
+fn test_mbarrier_skip_wait_access_before_blocking_wait() {
+    let ws = conflicts(
+        &ptx!(parse "check_failure/mbarrier_skip_wait_access_before_blocking_wait"),
+        in_out_config(2, 2),
+    );
+    assert_exchange_races(&ws);
+}

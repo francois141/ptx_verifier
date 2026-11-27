@@ -278,9 +278,11 @@ pub(super) fn lower_mbarrier_complete_tx(
 pub(super) fn lower_mbarrier_test_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTestWaitInstr,
+    form: WaitForm,
 ) -> LowerResult<()> {
     lower_mbarrier_wait_parity(
         ctx,
+        form,
         "mbarrier.test_wait",
         wait.parity,
         wait.sem,
@@ -298,12 +300,14 @@ pub(super) fn lower_mbarrier_test_wait(
 pub(super) fn lower_mbarrier_try_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTryWaitInstr,
+    form: WaitForm,
 ) -> LowerResult<()> {
     if let Some(hint) = &wait.suspend_hint {
         ctx.resolve_operand(hint)?;
     }
     lower_mbarrier_wait_parity(
         ctx,
+        form,
         "mbarrier.try_wait",
         wait.parity,
         wait.sem,
@@ -315,12 +319,21 @@ pub(super) fn lower_mbarrier_try_wait(
     )
 }
 
-/// Shared lowering for a matched wait loop's `test_wait`/`try_wait` (see
-/// `match_mbarrier_wait_loop`): both collapse to one unpredicated, blocking
-/// `LoweredInstr::MbarrierWaitParity`.
+/// Where a `test_wait`/`try_wait` stands: the matched retry loop (`match_mbarrier_wait_loop`),
+/// which collapses to one unpredicated blocking wait, or alone, a one-shot test under its
+/// own guard.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum WaitForm {
+    RetryLoop,
+    Once(Option<Predicate>),
+}
+
+/// Shared lowering of `test_wait`/`try_wait`: a retry loop to the blocking
+/// `LoweredInstr::MbarrierWaitParity`, a lone one to `LoweredInstr::MbarrierWaitOnce`.
 #[allow(clippy::too_many_arguments)]
 fn lower_mbarrier_wait_parity(
     ctx: &mut LoweringContext,
+    form: WaitForm,
     name: &str,
     parity: bool,
     sem: Option<MemSemantics>,
@@ -341,14 +354,25 @@ fn lower_mbarrier_wait_parity(
     let wait_complete = ctx.resolve_dst(wait_complete)?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, addr)?;
     let phase_parity = ctx.resolve_operand(phase_parity)?;
-    ctx.emit(
-        LoweredInstr::MbarrierWaitParity {
-            wait_complete,
-            addr_base,
-            addr_offset,
-            phase_parity,
-        },
-        None,
-    )?;
+    match form {
+        WaitForm::RetryLoop => ctx.emit(
+            LoweredInstr::MbarrierWaitParity {
+                wait_complete,
+                addr_base,
+                addr_offset,
+                phase_parity,
+            },
+            None,
+        )?,
+        WaitForm::Once(predicate) => ctx.emit(
+            LoweredInstr::MbarrierWaitOnce {
+                wait_complete,
+                addr_base,
+                addr_offset,
+                phase_parity,
+            },
+            predicate,
+        )?,
+    }
     Ok(())
 }

@@ -168,6 +168,10 @@ pub enum EvalError {
         pc: InstrId,
         misuse: ClusterBarrierMisuse,
     },
+    /// A thread ran the same one-shot `mbarrier.{try,test}_wait` `ONE_SHOT_WAIT_SPIN_LIMIT`
+    /// times on one phase without blocking: a spin loop, which never ends while every one-shot
+    /// wait returns false and nothing else runs.
+    OneShotMbarrierWaitSpins { thread: ThreadId, pc: InstrId },
     /// `query_cancel` decoded a value other than the declined `try_cancel`
     /// response: a successful cancel, which the never-steal assumption excludes.
     ClusterLaunchControlUndeclinedResponse { thread: ThreadId, pc: InstrId },
@@ -452,6 +456,13 @@ impl fmt::Display for EvalError {
                     thread, pc, observer, observed_at
                 ),
             },
+            Self::OneShotMbarrierWaitSpins { thread, pc } => write!(
+                f,
+                "{}: the one-shot mbarrier wait at {} spins on one phase; Volta models a \
+                 one-shot try_wait/test_wait as returning false, so only a blocking wait \
+                 (the retry loop `L: try_wait p; @!p bra L;`) can wait for a phase",
+                thread, pc
+            ),
             Self::ClusterBarrierMisuse { thread, pc, misuse } => match misuse {
                 ClusterBarrierMisuse::ArriveTwice => write!(
                     f,
@@ -643,6 +654,7 @@ impl EvalError {
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
             | Self::ClusterBarrierMisuse { thread, pc, .. }
+            | Self::OneShotMbarrierWaitSpins { thread, pc }
             | Self::ClusterLaunchControlUndeclinedResponse { thread, pc }
             | Self::MapaRankOutsideCluster { thread, pc, .. }
             | Self::Tcgen05InvalidColumnCount { thread, pc, .. }

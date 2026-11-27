@@ -1788,3 +1788,13 @@ fn test_cluster_barrier_arrive_twice() {
         other => panic!("expected ClusterBarrierMisuse, got {other:?}"),
     }
 }
+
+/// A spin on a one-shot `try_wait` ends with `OneShotMbarrierWaitSpins` at the wait.
+#[test]
+fn test_mbarrier_one_shot_wait_spins() {
+    let module = ptx!(parse "execution_error/mbarrier_one_shot_wait_spins");
+    match run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))) {
+        Err(AnalysisError::Eval(EvalError::OneShotMbarrierWaitSpins { .. })) => {}
+        other => panic!("expected a one-shot wait spin, got {other:?}"),
+    }
+}

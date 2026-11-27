@@ -93,6 +93,13 @@ and `eval/`; neither imports the other. Lowering is split by instruction family
 and the dispatch is in `lower/mod.rs`. Multi-statement idioms collapse here
 (`idioms.rs`): the nvcc `__symexpf` call sequence becomes `UnaryOp::Exp`, and
 the `mbarrier.try_wait` retry loop becomes one blocking `MbarrierWaitParity`.
+Any other `try_wait`/`test_wait` is a one-shot test (`MbarrierWaitOnce`, CUTLASS's skip-wait):
+it returns false, a real outcome while the phase is incomplete and the least synchronized one
+(a false result acquires nothing, PTX ISA 9.7.13.15.16), so the thread synchronizes at its later
+blocking wait; the run records `Assumption::OneShotMbarrierWaitNotComplete`, and a thread
+repeating one on an unchanged phase is spinning (`EvalError::OneShotMbarrierWaitSpins`). Tests:
+`mbarrier_skip_wait`, `mbarrier_skip_wait_access_before_blocking_wait` (a load before the
+blocking wait races), `mbarrier_one_shot_wait_spins`.
 Features Volta does not model (`wgmma`, `activemask`, ...)
 are rejected as `LowerError`s. An immediate `mbarrier.init` or `mbarrier.arrive`
 count outside `[1, 2^20 - 1]` is an invalid operand; a register count outside it

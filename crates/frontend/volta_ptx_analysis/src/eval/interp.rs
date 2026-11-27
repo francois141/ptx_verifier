@@ -40,6 +40,10 @@ use volta_graph::{
     GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
 };
 
+/// How many times in a row a thread may run one one-shot mbarrier wait on one phase: a skip-wait
+/// tests each phase once, while a spin loop on it would never end.
+const ONE_SHOT_WAIT_SPIN_LIMIT: u32 = 64;
+
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
 
@@ -243,6 +247,9 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) deferred_error: Option<EvalError>,
     regions: MemRegions,
     pub(in crate::eval) mbarriers: MbarrierTable,
+    /// Per thread and one-shot wait: the object and completed-phase count it last tested, and
+    /// how many times in a row it did (`ONE_SHOT_WAIT_SPIN_LIMIT`).
+    one_shot_waits: std::collections::HashMap<(ThreadId, InstrId), (MbarrierId, u64, u32)>,
     pub(in crate::eval) cluster_barrier: ClusterBarrier,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
     pub(in crate::eval) barriers: [PendingArrivals; NUM_BARRIERS],
@@ -470,6 +477,7 @@ impl<'p> Interpreter<'p> {
             cluster_barrier: ClusterBarrier::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             barrier_counts: [None; NUM_BARRIERS],
+            one_shot_waits: std::collections::HashMap::new(),
             tensor_maps,
             graph: GraphBuilder::new(provenance),
             rec: Recording::default(),
@@ -2073,6 +2081,44 @@ impl<'p> Interpreter<'p> {
                 self.record_mbarrier_wait(t, pc, id, phase_parity);
                 self.threads[t].status = Status::AtMbarrier { id, phase_parity };
                 return Ok(()); // pc advances when the wait's condition is satisfied
+            }
+
+            LoweredInstr::MbarrierWaitOnce {
+                wait_complete,
+                addr_base,
+                addr_offset,
+                phase_parity,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self.mbarrier_operation(t, pc, addr)?;
+                let parity =
+                    self.concrete_operand(t, pc, phase_parity, "mbarrier wait phaseParity")?;
+                if !matches!(parity, 0 | 1) {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!("mbarrier wait phaseParity {parity} (must be 0 or 1)"),
+                    });
+                }
+                let phases = self.mbarriers.completed_phases(id);
+                let tested = self
+                    .one_shot_waits
+                    .entry((t, pc))
+                    .or_insert((id, phases, 0));
+                *tested = match *tested {
+                    (seen, seen_phases, n) if seen == id && seen_phases == phases => {
+                        (id, phases, n + 1)
+                    }
+                    _ => (id, phases, 1),
+                };
+                if tested.2 > ONE_SHOT_WAIT_SPIN_LIMIT {
+                    return Err(EvalError::OneShotMbarrierWaitSpins { thread: t, pc });
+                }
+                self.graph
+                    .assume(volta_graph::Assumption::OneShotMbarrierWaitNotComplete);
+                let incomplete = self.arena.bool_val(false);
+                self.write_reg(t, *wait_complete, Value::Scalar(incomplete));
             }
 
             LoweredInstr::Trap => {

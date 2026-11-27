@@ -10,7 +10,7 @@ use crate::ir::{
 };
 
 use super::context::LoweringContext;
-use super::error::{LowerError, LowerResult, MbarrierWaitKind};
+use super::error::{LowerError, LowerResult};
 use super::lower_function;
 
 /// Helper to convert &str to AsciiString for tests
@@ -1246,36 +1246,48 @@ fn test_mbarrier_expect_tx_lowers_to_an_announcement() {
     }
 }
 
-/// Any wait outside the exact `L: wait; @!p bra L;` window is rejected,
-/// including CUTLASS's `@p bra DONE; bra L;` spelling of the same loop.
+/// Any wait outside the exact retry-loop windows (`L: wait; @!p bra L;`, or CUTLASS's
+/// `@p bra DONE; bra L;` spelling) is a one-shot test, keeping its own guard; no blocking
+/// wait is made of it.
 #[test]
-fn test_mbarrier_wait_outside_the_retry_loop_is_rejected() {
-    fn assert_rejected_wait(body: &str, expected: MbarrierWaitKind) {
-        match lower_body(body) {
-            Err(LowerError::MbarrierWaitOutsideRetryLoop { wait }) => {
-                assert_eq!(wait, expected, "{body:?}")
-            }
-            other => panic!("expected {body:?} to be rejected as a wait, got {other:?}"),
-        }
+fn test_mbarrier_wait_outside_the_retry_loop_is_one_shot() {
+    fn assert_one_shot(body: &str, guarded: bool) {
+        let prog = lower_body(body).unwrap_or_else(|e| panic!("{body:?}: {e:?}"));
+        let once: Vec<_> = prog
+            .instructions
+            .iter()
+            .filter(|(_, instr)| matches!(instr, LoweredInstr::MbarrierWaitOnce { .. }))
+            .map(|(pc, _)| pc)
+            .collect();
+        let blocking = prog
+            .instructions
+            .values()
+            .any(|instr| matches!(instr, LoweredInstr::MbarrierWaitParity { .. }));
+        assert!(
+            once.len() == 1 && !blocking,
+            "{body:?}: {:?}",
+            prog.instructions
+        );
+        assert_eq!(prog.predicate(once[0]).is_some(), guarded, "{body:?}");
     }
     let wait = "mbarrier.try_wait.parity.shared::cta.b64 %p1, [smem], 0;";
     for body in [
         wait.to_string(),
         format!("WAIT:\nadd.u32 %r1, %r1, 1;\n{wait}\n@!%p1 bra WAIT;"),
-        format!("WAIT:\n@%p0 {wait}\n@!%p1 bra WAIT;"),
         format!("WAIT:\n{wait}\n@%p1 bra WAIT;"),
         format!("WAIT:\n{wait}\n@!%p2 bra WAIT;"),
         format!("WAIT:\n{wait}\nbra WAIT;"),
         format!("OTHER:\nWAIT:\n{wait}\n@!%p1 bra OTHER;"),
         format!("WAIT:\n{wait}\n@!%p1 bra DONE;\nbra WAIT;\nDONE:"),
-        format!("WAIT:\n{wait}\n@%p1 bra DONE;\nbra WAIT;\nOTHER:"),
+        format!("WAIT:\n{wait}\n@%p1 bra DONE;\nbra WAIT;\nOTHER:\nDONE:"),
         format!("WAIT:\n{wait}\nadd.u32 %r1, %r1, 1;\n@!%p1 bra WAIT;"),
     ] {
-        assert_rejected_wait(&body, MbarrierWaitKind::TryWait);
+        assert_one_shot(&body, false);
     }
-    assert_rejected_wait(
+    assert_one_shot(&format!("WAIT:\n@%p0 {wait}\n@!%p1 bra WAIT;"), true);
+    assert_one_shot(
         "mbarrier.test_wait.parity.shared::cta.b64 %p1, [smem], 0;",
-        MbarrierWaitKind::TestWait,
+        false,
     );
 }
 

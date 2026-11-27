@@ -58,11 +58,6 @@ pub enum LowerError {
     /// assembler would accept it.
     InvalidInstruction { instruction: String, reason: String },
 
-    /// An `mbarrier.{try,test}_wait` outside the one modeled form, the retry
-    /// loop `L: wait.parity p, [addr], ph; @!p bra L;`: the scheduler can
-    /// block a thread, not spin it.
-    MbarrierWaitOutsideRetryLoop { wait: MbarrierWaitKind },
-
     /// Invalid operand for instruction
     InvalidOperand {
         instruction: String,
@@ -94,21 +89,6 @@ pub enum LowerError {
 
     /// No function body (declaration only)
     NoFunctionBody { name: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MbarrierWaitKind {
-    TestWait,
-    TryWait,
-}
-
-impl MbarrierWaitKind {
-    pub fn mnemonic(self) -> &'static str {
-        match self {
-            Self::TestWait => "mbarrier.test_wait",
-            Self::TryWait => "mbarrier.try_wait",
-        }
-    }
 }
 
 impl fmt::Display for LowerError {
@@ -176,21 +156,6 @@ impl fmt::Display for LowerError {
                 "Invalid instruction: {}\nReason: {}",
                 instruction, reason
             ),
-
-            Self::MbarrierWaitOutsideRetryLoop { wait } => {
-                let name = wait.mnemonic();
-                write!(
-                    f,
-                    "Unsupported instruction: {name}\n\
-                     Reason: Volta only models an mbarrier wait as an exact retry loop, \
-                     `L: {name}.parity{{...}}.b64 %p, [addr], phaseParity; @!%p bra L;` \
-                     (a label, then an unpredicated wait, then a branch back to that same \
-                     label guarded by the negated waitComplete predicate) or `L: ...wait \
-                     %p, ...; @%p bra DONE; bra L; DONE:` (the same loop leaving through \
-                     the label right after it), which lowers to one blocking wait; this \
-                     wait is in neither form"
-                )
-            }
 
             Self::InvalidOperand {
                 instruction,

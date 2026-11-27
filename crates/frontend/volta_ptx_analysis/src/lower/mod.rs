@@ -41,11 +41,10 @@ use arith::{
 use clc::{lower_clc_query_cancel, lower_clc_try_cancel};
 use context::{LocalParamSlot, LoweringContext, unsupported};
 use control::{lower_bar, lower_barrier_cluster, lower_branch, lower_call, lower_fence};
-use error::MbarrierWaitKind;
 pub use error::{LowerError, LowerResult};
 use idioms::{MbarrierWaitLoop, match_mbarrier_wait_loop, statement_span};
 use mbarrier::{
-    lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_expect_tx,
+    WaitForm, lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_expect_tx,
     lower_mbarrier_init, lower_mbarrier_inval, lower_mbarrier_test_wait, lower_mbarrier_try_wait,
 };
 use memory::{
@@ -253,8 +252,12 @@ fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResu
             lower_statement(ctx, &stmts[i])?;
             ctx.current_span = statement_span(&stmts[i + 1]);
             match &wait_loop.wait {
-                MbarrierWaitLoop::Test(wait) => lower_mbarrier_test_wait(ctx, wait)?,
-                MbarrierWaitLoop::Try(wait) => lower_mbarrier_try_wait(ctx, wait)?,
+                MbarrierWaitLoop::Test(wait) => {
+                    lower_mbarrier_test_wait(ctx, wait, WaitForm::RetryLoop)?
+                }
+                MbarrierWaitLoop::Try(wait) => {
+                    lower_mbarrier_try_wait(ctx, wait, WaitForm::RetryLoop)?
+                }
             }
             if let Some(exit) = wait_loop.exit_label {
                 lower_statement(ctx, exit)?;
@@ -616,12 +619,12 @@ fn lower_parsed_instruction(
         ParsedInstruction::MbarrierCompleteTx(complete_tx) => {
             lower_mbarrier_complete_tx(ctx, complete_tx, predicate)
         }
-        ParsedInstruction::MbarrierTestWait(_) => Err(LowerError::MbarrierWaitOutsideRetryLoop {
-            wait: MbarrierWaitKind::TestWait,
-        }),
-        ParsedInstruction::MbarrierTryWait(_) => Err(LowerError::MbarrierWaitOutsideRetryLoop {
-            wait: MbarrierWaitKind::TryWait,
-        }),
+        ParsedInstruction::MbarrierTestWait(wait) => {
+            lower_mbarrier_test_wait(ctx, wait, WaitForm::Once(predicate))
+        }
+        ParsedInstruction::MbarrierTryWait(wait) => {
+            lower_mbarrier_try_wait(ctx, wait, WaitForm::Once(predicate))
+        }
         _ => Err(LowerError::UnsupportedInstruction {
             instruction: format!("{:?}", instr),
             reason: Some("Instruction not yet implemented".to_string()),

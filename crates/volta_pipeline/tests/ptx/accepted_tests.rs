@@ -2544,3 +2544,23 @@ fn test_float_bit_comparisons() {
     ];
     analyze!("success/float_bit_comparisons", config);
 }
+
+/// CUTLASS's skip-wait: the one-shot `try_wait` returns false, the blocking wait orders the
+/// exchange, and the run records the assumption.
+#[test]
+fn test_mbarrier_skip_wait() {
+    analyze!("success/mbarrier_skip_wait", in_out_config(2, 2));
+    let result = common::analyze_only(
+        &ptx!(parse "success/mbarrier_skip_wait"),
+        None,
+        in_out_config(2, 2),
+    )
+    .expect("the execution starts");
+    assert!(
+        result
+            .graph
+            .provenance()
+            .assumptions
+            .contains(&volta_graph::Assumption::OneShotMbarrierWaitNotComplete)
+    );
+}

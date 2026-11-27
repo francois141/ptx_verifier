@@ -1,0 +1,62 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// The skip-wait of `mbarrier_skip_wait`, with the load moved between the one-shot try_wait and
+// the blocking wait: a one-shot that returned false acquires nothing (PTX ISA 9.7.13.15.16: the
+// acquire pattern forms only when it returns True), so the load races the other thread's store.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<4>;
+    .reg .f32 %f<3>;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<7>;
+    .shared .align 8 .b8 bar[8];
+    .shared .align 8 .b8 sdata[64];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, bar;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r2], 2;
+    fence.mbarrier_init.release.cluster;
+    bar.sync 0;
+    shl.b32 %r3, %r1, 2;
+    cvt.u64.u32 %rd3, %r3;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mov.u32 %r4, sdata;
+    add.s32 %r5, %r4, %r3;
+    st.shared.f32 [%r5], %f1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    xor.b32 %r6, %r1, 1;
+    shl.b32 %r6, %r6, 2;
+    add.s32 %r7, %r4, %r6;
+    {
+    .reg .pred P1;
+    mbarrier.try_wait.parity.shared::cta.b64 P1, [%r2], 0;
+    selp.b32 %r8, 1, 0, P1;
+    }
+    ld.shared.f32 %f2, [%r7];
+    setp.ne.b32 %p2, %r8, 0;
+    @%p2 bra SKIP;
+    mov.b32 %r9, 10000000;
+    {
+    .reg .pred P1;
+LAB_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 P1, [%r2], 0, %r9;
+    @P1 bra DONE;
+    bra LAB_WAIT;
+DONE:
+    }
+SKIP:
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.f32 [%rd5], %f2;
+    ret;
+}

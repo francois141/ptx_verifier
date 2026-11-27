@@ -7,9 +7,9 @@ use crate::ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,
 };
 use crate::model::{
-    AbortCause, AccessMode, ArrivalOrdering, AsyncOp, AsyncOpKind, BarrierArrivals, BulkWaitScope,
-    Contribution, ContributionKind, Event, EventKind, ExecContext, FenceKind, Footprint,
-    Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess, OperandRole,
+    AbortCause, AccessMode, ArrivalOrdering, Assumption, AsyncOp, AsyncOpKind, BarrierArrivals,
+    BulkWaitScope, Contribution, ContributionKind, Event, EventKind, ExecContext, FenceKind,
+    Footprint, Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess, OperandRole,
     OrderingKind, Parity, Provenance, Proxy, ReductionOp, Space, StoredValue, SyncObject,
     SyncObjectKind, Terminal,
 };
@@ -70,6 +70,14 @@ pub enum BarrierWait {
 }
 
 impl GraphBuilder {
+    /// Add `assumption` to the provenance, once: a modeling choice the execution made.
+    pub fn assume(&mut self, assumption: Assumption) {
+        let assumptions = &mut self.graph.provenance.assumptions;
+        if !assumptions.contains(&assumption) {
+            assumptions.push(assumption);
+        }
+    }
+
     pub fn new(provenance: Provenance) -> Self {
         let threads = provenance.threads();
         GraphBuilder {

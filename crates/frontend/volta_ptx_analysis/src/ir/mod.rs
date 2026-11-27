@@ -980,6 +980,16 @@ pub enum LoweredInstr {
         phase_parity: Operand,
     },
 
+    /// A one-shot `mbarrier.{test,try}_wait.parity` outside the retry loop (CUTLASS's skip-wait,
+    /// whose `selp`'d result decides a later blocking wait): `waitComplete` is always false, a
+    /// real outcome while the phase is incomplete and the least synchronized one (no acquire).
+    MbarrierWaitOnce {
+        wait_complete: RegId,
+        addr_base: Operand,
+        addr_offset: i64,
+        phase_parity: Operand,
+    },
+
     // =========================================================================
     // Special
     // =========================================================================
@@ -1138,6 +1148,7 @@ define_instr_kinds!(
     MbarrierExpectTx,
     MbarrierCompleteTx,
     MbarrierWaitParity,
+    MbarrierWaitOnce,
     Trap,
     Nop,
 );

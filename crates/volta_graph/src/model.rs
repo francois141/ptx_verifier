@@ -659,6 +659,11 @@ pub enum Assumption {
     /// The kernel's prerequisite grids completed, their writes visible, before it launched:
     /// `griddepcontrol.wait` returns at once and `launch_dependents` has no effect.
     PrerequisiteGridsComplete,
+    /// Every one-shot `mbarrier.{try,test}_wait` (CUTLASS's skip-wait, outside a retry loop)
+    /// returns false: a real outcome while its phase is incomplete and the least synchronized
+    /// one, since a true result only acquires earlier. Where the phase had completed the
+    /// hardware returns true, so the run checks a more weakly ordered execution than it.
+    OneShotMbarrierWaitNotComplete,
 }
 
 impl Assumption {
@@ -735,6 +740,10 @@ impl Assumption {
             }
             Assumption::PrerequisiteGridsComplete => {
                 "prerequisite grids completed before launch (griddepcontrol.wait returns at once)"
+            }
+            Assumption::OneShotMbarrierWaitNotComplete => {
+                "every one-shot mbarrier try_wait/test_wait returns false (phase not complete); \
+                 the thread synchronizes at its later blocking wait"
             }
         }
     }

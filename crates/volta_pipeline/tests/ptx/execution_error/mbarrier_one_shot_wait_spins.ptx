@@ -1,0 +1,22 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// A spin on a one-shot try_wait that is not the retry loop (a counter bump inside it): every
+// one-shot returns false under Volta's model, so the spin never ends; the run stops with a
+// named error instead of running out the instruction budget.
+.visible .entry k()
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<4>;
+    .shared .align 8 .b8 bar[8];
+
+    mov.u32 %r1, bar;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mov.u32 %r2, 0;
+WAIT:
+    add.u32 %r2, %r2, 1;
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    @!%p1 bra WAIT;
+    ret;
+}
