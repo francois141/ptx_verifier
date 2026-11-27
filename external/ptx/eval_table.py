@@ -25,6 +25,7 @@ OUTPUT = PTX_ROOT / "output"
 # that likely works on today's hardware; "known" were reported elsewhere first.
 FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or sweep stem) it covers
     "vllm": {"hadacore cp.async race (4c)": ["hadamard_transform_kernel"]},
+    "TensorRT-LLM": {"in-place MLA merge softmax-stats race (4e)": ["mergeAttnWithSoftmaxKernel"]},
     "flashinfer": {"MergeStateInPlace LSE race (4d)": ["MergeStateInPlaceKernel"]},
     "flash-attention": {"split-KV combine out-of-bounds LSE write (4b)": ["splitkv_combine"]},
     "DeepGEMM": {"tcgen05.ld lane-quadrant UB, latent (4)": ["sm100_"]},

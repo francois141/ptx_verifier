@@ -35,7 +35,8 @@ FRAMEWORKS = ("vllm", "TensorRT-LLM", "flash-attention", "FlashMLA", "flashinfer
 DEFAULT_TABLE = PTX_ROOT / "output" / "ptx_table.md"
 MEMCAP = None  # memcap.py, loaded in main
 
-ENTRY = re.compile(r"^\.visible \.entry (\S+?)\(", re.MULTILINE)
+# Kernels in an anonymous namespace are `.entry` without `.visible`.
+ENTRY = re.compile(r"^(?:\.visible )?\.entry (\S+?)\(", re.MULTILINE)
 
 
 def load(path: Path, name: str):
