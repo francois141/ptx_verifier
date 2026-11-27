@@ -587,9 +587,9 @@ impl<'p> Interpreter<'p> {
         Ok(v)
     }
 
-    /// Zero-extending a symbolic 32-bit value into 64 bits is exactly the pair
-    /// (value, 0): how nvcc/Triton feed an f32 into an `f32x2` lane (load or
-    /// `cvt.u64.u32`). `None` when the shape doesn't match.
+    /// Zero-extending a symbolic value into twice its width is exactly the pair (value, 0):
+    /// how nvcc/Triton feed an f32 into an `f32x2` lane (load or `cvt.u64.u32`), or a bf16 half
+    /// into a packed word (`cvt.u32.u16`). `None` when the shape doesn't match.
     pub(in crate::eval) fn zero_extend_to_pair(
         &mut self,
         src_bits: u32,
@@ -597,8 +597,7 @@ impl<'p> Interpreter<'p> {
         dst_bits: u32,
         e: ExprId,
     ) -> Option<Value> {
-        if src_bits == 32
-            && dst_bits == 64
+        if ((src_bits == 32 && dst_bits == 64) || (src_bits == 16 && dst_bits == 32))
             && !src_signed
             && !self.arena.is_undefined(e)
             && !self.arena.is_concrete(e)

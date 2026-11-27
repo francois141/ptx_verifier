@@ -2621,3 +2621,30 @@ fn test_brev_bfind() {
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
     analyze!("success/brev_bfind", config);
 }
+
+/// Two zero-extended 16-bit halves shifted and or-ed into one word store as two elements.
+#[test]
+fn test_packed_halves_word_store() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/packed_halves_word_store", config);
+}
