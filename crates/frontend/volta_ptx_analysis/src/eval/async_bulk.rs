@@ -15,7 +15,7 @@ use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table::{self, TensorMapEntry};
 use crate::eval::value::{MbarrierId, Value};
 use crate::ir::symbols::{PARAM_GENERIC_BASE, SHARED_GENERIC_BASE};
-use crate::ir::tensor_map::{TensorFillMode, TensorLoadMode};
+use crate::ir::tensor_map::{TensorFillMode, TensorLoadMode, TensorStoreMode};
 use crate::ir::{BulkWaitScope, InstrId, MemSpace, Operand};
 
 /// Where a TMA's generic tensor-map address points: a kernel parameter's map in
@@ -193,6 +193,7 @@ impl<'p> Interpreter<'p> {
         &mut self,
         t: ThreadId,
         pc: InstrId,
+        mode: TensorStoreMode,
         tensormap_base: &Operand,
         tensormap_offset: i64,
         coords: &[Operand],
@@ -202,8 +203,14 @@ impl<'p> Interpreter<'p> {
         let src_addr = self.effective_addr(t, pc, src_base, src_offset)?;
         let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
         let (tensormap_space, tm_addr) = locate_tensor_map(tm_addr);
-        let tile = TensorLoadMode::Tile;
-        let tma = self.tma_box(t, pc, tensormap_space, tm_addr, src_addr, coords, &tile)?;
+        // With no offsets, an im2col store walks the column a load with zero offsets reads.
+        let walk = match mode {
+            TensorStoreMode::Tile => TensorLoadMode::Tile,
+            TensorStoreMode::Im2colNoOffsets => TensorLoadMode::Im2col {
+                offsets: vec![Operand::ImmU64(0); coords.len() - 2],
+            },
+        };
+        let tma = self.tma_box(t, pc, tensormap_space, tm_addr, src_addr, coords, &walk)?;
 
         let reads = self.record_async_issue(t, pc, AsyncOpKind::TensorStoreRead);
         let writes = self.record_async_issue(t, pc, AsyncOpKind::TensorStoreWrite);
@@ -566,16 +573,9 @@ fn shared_layout(
                 });
             }
         };
-        if !smem_addr.is_multiple_of(atom_bytes) {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: format!(
-                    "cp.async.bulk.tensor: shared address {:#x} is not aligned to the {:?} \
-                     swizzle pattern's {}-byte boundary (nonzero swizzle base offset not modeled)",
-                    smem_addr, tensor.swizzle, atom_bytes
-                ),
-            });
-        }
+        // A box off the pattern's boundary is legal: its swizzle base offset is nonzero (ISA
+        // 5.5.7: `(dstMem / 128) % 8` for 128B), which `swizzled_element_addr` gets by XORing
+        // absolute address bits.
         atom_bytes
     };
 

@@ -433,6 +433,7 @@ impl<'p> Interpreter<'p> {
                 let ty = match format {
                     OperandFormat::F16 => ScalarType::F16,
                     OperandFormat::Bf16 => ScalarType::Bf16,
+                    OperandFormat::Tf32 => ScalarType::F32,
                     OperandFormat::E4m3 => ScalarType::E4m3,
                     OperandFormat::E5m2 => ScalarType::E5m2,
                 };

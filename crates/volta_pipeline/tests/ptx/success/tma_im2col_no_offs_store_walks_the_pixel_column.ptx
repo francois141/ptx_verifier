@@ -1,0 +1,38 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// An `.im2col_no_offs` TMA store (CUTLASS's conv epilogue) writes shared rows as a pixel
+// column of an im2col map: from {c, w, h, n} = 0 it walks W, then H, one row of 4 channels
+// per pixel. The thread stages in[0..16) in shared order, so out (NHWC 1 x 2 x 2 x 4) = in.
+.visible .entry k(
+    .param .align 64 .b8 args[136]
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<6>;
+    .shared .align 128 .b8 tile[64];
+
+    mov.b64 %rd1, args;
+    cvta.param.u64 %rd2, %rd1;
+    ld.param.u64 %rd3, [args+128];
+    mov.u32 %r2, tile;
+    mov.u32 %r4, 0;
+STAGE:
+    mul.wide.u32 %rd4, %r4, 4;
+    add.s64 %rd5, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    shl.b32 %r5, %r4, 2;
+    add.u32 %r6, %r2, %r5;
+    st.shared.f32 [%r6], %f1;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p1, %r4, 16;
+    @%p1 bra STAGE;
+    fence.proxy.async.shared::cta;
+    cp.async.bulk.tensor.4d.global.shared::cta.im2col_no_offs.bulk_group [%rd2, {0, 0, 0, 0}], [%r2];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    ret;
+}

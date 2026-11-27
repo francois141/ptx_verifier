@@ -217,6 +217,14 @@ pub enum MemSpace {
     Const,
 }
 
+/// The space a load or store addresses: a named one, or the generic space, resolved per
+/// access through the windows of `symbols` (`symbols::resolve_generic`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AddressSpace {
+    Space(MemSpace),
+    Generic,
+}
+
 /// Which side of the generic-to-tensor-map-proxy ordering a `fence.proxy.tensormap::generic`
 /// is.
 #[derive(Debug, Clone, PartialEq)]
@@ -270,7 +278,7 @@ pub enum LoweredInstr {
     /// Load from memory: dst = mem[base + offset]
     Load {
         dst: RegId,
-        space: MemSpace,
+        space: AddressSpace,
         base: Operand,
         offset: i64,
         ty: ScalarType,
@@ -279,7 +287,7 @@ pub enum LoweredInstr {
     /// Vector load: dst[0..n] = mem[base + offset]
     LoadVec {
         dst: Vec<RegId>,
-        space: MemSpace,
+        space: AddressSpace,
         base: Operand,
         offset: i64,
         ty: ScalarType,
@@ -287,7 +295,7 @@ pub enum LoweredInstr {
 
     /// Store to memory: mem[base + offset] = src
     Store {
-        space: MemSpace,
+        space: AddressSpace,
         base: Operand,
         offset: i64,
         src: Operand,
@@ -298,7 +306,7 @@ pub enum LoweredInstr {
     /// operand, e.g. an immediate in the "zero-init one lane" idiom `{%f1,
     /// %f2, 0f00000000, %f4}`.
     StoreVec {
-        space: MemSpace,
+        space: AddressSpace,
         base: Operand,
         offset: i64,
         src: Vec<Operand>,
@@ -914,6 +922,7 @@ pub enum LoweredInstr {
     /// store from the executing CTA's shared memory to global, tracked by the
     /// issuer's bulk async-groups.
     CpAsyncBulkTensorStore {
+        mode: crate::ir::tensor_map::TensorStoreMode,
         tensormap_base: Operand,
         tensormap_offset: i64,
         coords: Vec<Operand>,

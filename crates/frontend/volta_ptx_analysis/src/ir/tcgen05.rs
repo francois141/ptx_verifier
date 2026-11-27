@@ -11,6 +11,8 @@ use crate::ir::Operand;
 pub enum Tcgen05MmaKind {
     /// `.kind::f16`: f16/bf16 operands, `K = 16`.
     F16,
+    /// `.kind::tf32`: f32 operands read as tf32 (floats are exact reals here), `K = 8`.
+    Tf32,
     /// `.kind::f8f6f4`: 8/6/4-bit float operands, `K = 32`.
     F8f6f4,
     /// `.kind::mxf8f6f4` (`.block_scale`): `.kind::f8f6f4`'s operands, each

@@ -2736,9 +2736,12 @@ fn parse_ld(
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
     let mmio = mp.try_consume(ascii("mmio"));
+    // ptxas also takes the state space before the semantics (CUTLASS's
+    // `ld.global.acquire.gpu.b32`).
+    let early_space = mp.try_parse::<StateSpace>();
     let semantics = mp.try_parse::<MemSemantics>().unwrap_or(MemSemantics::Weak);
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let space = early_space.or_else(|| mp.try_parse::<StateSpace>());
     let cache_op = mp.try_parse::<CacheOp>();
     // Ignore eviction-priority/prefetch-size hints (no extra operand); any
     // other qualified modifier (an unparsed `::` state space, L2::cache_hint)

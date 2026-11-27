@@ -7,8 +7,8 @@ use std::fmt;
 use crate::frontend::ast::ScalarType;
 use id_collections::{IdVec, id_type};
 
-use crate::ir::InstrId;
 use crate::ir::types::{RegClass, RegCounts};
+use crate::ir::{InstrId, MemSpace};
 use crate::lower::{LowerError, LowerResult};
 
 /// The kind of symbol in the PTX namespace
@@ -374,6 +374,24 @@ pub fn shared_operand_addr(addr: u64) -> u64 {
 /// Where kernel parameters sit in the generic address space (`cvta.param.u64`),
 /// below the shared window; a TMA tensor-map operand there names a parameter's map.
 pub const PARAM_GENERIC_BASE: u64 = 0x5000_0000_0000_0000;
+
+/// Where local memory sits in the generic address space (`cvta.local.u64`), below the
+/// param window.
+pub const LOCAL_GENERIC_BASE: u64 = 0x4000_0000_0000_0000;
+
+/// The space and address a generic address names: its window's space at its offset in the
+/// shared, param and local windows, else global (which the generic space maps identically).
+pub fn resolve_generic(addr: u64) -> (MemSpace, u64) {
+    if (SHARED_GENERIC_BASE..SHARED_GENERIC_BASE + (1 << 32)).contains(&addr) {
+        (MemSpace::Shared, addr - SHARED_GENERIC_BASE)
+    } else if (PARAM_GENERIC_BASE..SHARED_GENERIC_BASE).contains(&addr) {
+        (MemSpace::Param, addr - PARAM_GENERIC_BASE)
+    } else if (LOCAL_GENERIC_BASE..PARAM_GENERIC_BASE).contains(&addr) {
+        (MemSpace::Local, addr - LOCAL_GENERIC_BASE)
+    } else {
+        (MemSpace::Global, addr)
+    }
+}
 
 /// Base address for module-scope `.global` variables; `Interpreter::new` rejects
 /// configs whose arrays overlap `[MODULE_GLOBAL_BASE, + module_global_size())`.

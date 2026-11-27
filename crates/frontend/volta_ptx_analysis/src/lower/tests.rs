@@ -550,9 +550,9 @@ fn test_clusterlaunchcontrol_try_cancel_forms() {
     assert_lowers(
         "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];",
     );
-    assert_rejected(
+    // Every cluster holds one CTA, so the multicast form lowers as the plain one.
+    assert_lowers(
         "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.multicast::cluster::all.b128 [%r1], [%r2];",
-        "only the executing CTA is modeled",
     );
     assert_rejected(
         "clusterlaunchcontrol.try_cancel.async.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];",
@@ -609,7 +609,7 @@ fn test_wgmma_is_not_supported() {
 }
 
 #[test]
-fn test_redux_sync_is_not_supported() {
+fn test_redux_sync_lowers() {
     for body in [
         "redux.sync.add.u32 %r1, %r2, 0xffffffff;",
         "mov.b32 %r2, {%rs1, %rs1};\n\
@@ -617,10 +617,7 @@ fn test_redux_sync_is_not_supported() {
          setp.lt.s32 %p1, %r1, 0;\n\
          @%p1 redux.sync.min.s32 %r1, %r2, 0xffffffff;",
     ] {
-        assert_rejected(
-            body,
-            "redux.sync redux.sync is not supported by Volta at the moment",
-        );
+        assert_lowers(body);
     }
 }
 
@@ -940,9 +937,9 @@ fn test_bar_rejections() {
 }
 
 #[test]
-fn test_reject_generic_ld_st() {
-    assert_rejected("ld.u32 %r1, [%rd1];", "generic");
-    assert_rejected("st.u32 [%rd1], %r1;", "generic");
+fn test_generic_and_explicit_ld_st_lower() {
+    assert_lowers("ld.u32 %r1, [%rd1];");
+    assert_lowers("st.u32 [%rd1], %r1;");
     assert_lowers("ld.global.u32 %r1, [%rd1];");
     assert_lowers("ld.volatile.shared.f32 %f1, [%r1];");
     assert_lowers("st.volatile.shared.u32 [%r1], %r2;");

@@ -645,7 +645,7 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     );
 }
 
-/// Only `.kind::f16` and `.kind::f8f6f4` are modeled; other kinds are
+/// Only `.kind::f16`, `.kind::tf32` and `.kind::f8f6f4` are modeled; other kinds are
 /// rejected at lowering naming the rejected and modeled kinds, not the
 /// generic "not yet implemented".
 #[test]
@@ -659,7 +659,7 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
         }) => {
             assert_eq!(instruction, "tcgen05.mma");
             let reason = reason.as_deref().unwrap_or("");
-            for expected in ["kind::tf32", ".kind::f16", ".kind::f8f6f4"] {
+            for expected in ["kind::i8", ".kind::f16", ".kind::tf32", ".kind::f8f6f4"] {
                 assert!(
                     reason.contains(expected),
                     "expected the reason to mention {expected}, got: {reason:?}"
@@ -1483,25 +1483,19 @@ fn test_hostile_shared_declaration_size_rejected() {
     );
 }
 
-/// Other cvta forms are rejected by name: `cvta.global` is compatible but
-/// unused by the corpus, while the 32-bit shared forms (and any local one)
-/// have no generic window: only the 64-bit shared and param forms are modeled.
+/// Other cvta forms are rejected by name: the 32-bit shared forms have no generic window,
+/// only the global identity and the 64-bit shared, param and local windows are modeled.
 #[test]
 fn test_cvta_other_forms_rejected() {
     for (expect, reason_fragment, (form, src)) in [
         (
-            "cvta.global",
-            "corpus",
-            ptx_case!("execution_error/cvta_other_forms_rejected_global"),
-        ),
-        (
             "cvta.shared",
-            "cvta{.to}.{shared,param}.u64",
+            "cvta{.to}.{shared,param,local}.u64",
             ptx_case!("execution_error/cvta_other_forms_rejected_shared"),
         ),
         (
             "cvta.to.shared",
-            "cvta{.to}.{shared,param}.u64",
+            "cvta{.to}.{shared,param,local}.u64",
             ptx_case!("execution_error/cvta_other_forms_rejected_to_shared"),
         ),
     ] {
@@ -1622,6 +1616,20 @@ fn test_clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected() {
             ..
         })) => {}
         other => panic!("expected ClusterLaunchControlUndeclinedResponse, got {other:?}"),
+    }
+}
+
+/// `ld.global.acquire.gpu` (space before semantics) parses, then stops at lowering on its
+/// acquire semantics like `ld.acquire.gpu.global`.
+#[test]
+fn test_ld_state_space_before_the_semantics() {
+    let module = ptx!(parse "execution_error/ld_state_space_before_the_semantics");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(reason.contains("memory-ordering qualifier Acquire"), "{reason}");
+        }
+        other => panic!("expected UnsupportedInstruction, got {other:?}"),
     }
 }
 

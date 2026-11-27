@@ -503,13 +503,15 @@ pub(super) fn lower_tcgen05_mma(
         {
             kind = Some(match sub.as_slice().as_bytes() {
                 b"f16" => Tcgen05MmaKind::F16,
+                b"tf32" => Tcgen05MmaKind::Tf32,
                 b"f8f6f4" => Tcgen05MmaKind::F8f6f4,
                 b"mxf8f6f4" => Tcgen05MmaKind::Mxf8f6f4,
                 other => {
                     return Err(unsupported(
                         name,
                         format!(
-                            "kind::{} (only .kind::f16, .kind::f8f6f4 and .kind::mxf8f6f4 are \
+                            "kind::{} (only .kind::f16, .kind::tf32, .kind::f8f6f4 and \
+                             .kind::mxf8f6f4 are \
                              modeled)",
                             String::from_utf8_lossy(other)
                         ),

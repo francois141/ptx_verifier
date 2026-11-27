@@ -15,8 +15,8 @@ Volta treats floats as exact reals, so nothing below is a rounding difference. E
 unit runs on one persistent CTA (sm_count 1) unless it says otherwise, so CTA 0 runs every
 tile, the stage ring wraps and the TMEM accumulators are reused.
 
-Part 1 is the issue Volta reports. Part 2 lists the units Volta cannot check yet, with what
-stops each. Part 3 records the Volta changes the SM100 kernels needed.
+Part 1 is the issues Volta reports. Part 2 lists the units Volta cannot check yet, with what
+stops each, and one open lead. Part 3 records the Volta changes the kernels needed.
 
 
 1. Reported by Volta
@@ -29,14 +29,17 @@ Where:    include/cutlass/epilogue/collective/sm100_epilogue_tma_warpspecialized
           store"); the same predicate in sm90_epilogue_tma_warpspecialized.hpp:714,
           sm100_epilogue_array_tma_warpspecialized.hpp:1175 and the two planar-complex SM100
           epilogues. Unchanged on CUTLASS main as of 2026-11-27.
-Volta:    14 units RACE-CONDITION, memory-conflict freedom: WriteWrite on D's first bytes
-          between two `cp.async.bulk.tensor.3d.global.shared::cta.bulk_group` stores of the
+Volta:    22 units RACE-CONDITION, memory-conflict freedom: WriteWrite on D's first bytes
+          between two `cp.async.bulk.tensor.*.global.shared::cta.bulk_group` stores of the
           same subtile, issued by two lanes of epilogue warp 0 (threads 128-159):
           gemm_bf16_tn_128x128, gemm_bf16_nt_128x128, gemm_f16_nn_128x128,
           gemm_bf16_tn_colmajor_d, gemm_bf16_tn_64x128, gemm_f16_tn_128x256_f32,
-          gemm_e4m3_tn_128x128_bf16, gemm_bf16_tn_2stage, gemm_bf16_tn_batched,
-          gemm_bf16_tn_clc, gemm_f16_tn_raster_m_swizzle2, gemm_bf16_tn_relu,
-          gemm_bf16_tn_silu, gemm_bf16_tn_gelu.
+          gemm_e4m3_tn_128x128_bf16, gemm_tf32_tn_128x128, gemm_bf16_tn_2stage,
+          gemm_bf16_tn_batched, gemm_bf16_tn_clc, gemm_f16_tn_raster_m_swizzle2,
+          gemm_bf16_tn_beta, gemm_bf16_tn_relu, gemm_bf16_tn_silu, gemm_bf16_tn_gelu,
+          gemm_bf16_tn_row_bias_relu, gemm_bf16_tn_col_bias, gemm_e4m3_blockwise,
+          gemm_mxfp8_blockscaled (also CL-2), gemm_bf16_tn_cpasync (also CL-3) and
+          conv2d_fprop_f16 (the `.im2col_no_offs` store of the same epilogue).
 What:     The store predicate selects the whole warp, and CuTe's SM90_TMA_STORE copy elects
           no lane (cute/arch/copy_sm90_tma.hpp: one `cp.async.bulk.tensor` per calling
           thread). So each of the warp's 32 lanes issues a TMA store of the same shared-memory
@@ -51,27 +54,98 @@ Fix:      elect one lane, as the array epilogue's other store path already does
           (sm100_epilogue_array_tma_warpspecialized.hpp:808, "a single thread from one warp
           issues TMA store"): `bool issue_tma_store = (warp_idx == 0) && cute::elect_one_sync();`
 Status:   the fix (cutlass.py FIXES, built into patched/) makes every graph check pass on all
-          14 units; 12 are also proved equal to their specs (ACCEPT), gemm_bf16_tn_gelu has no
-          spec (VERIFIED), and gemm_bf16_tn_silu's equivalence stays undecided (its graph
-          VERIFIED). Reported upstream as NVIDIA/cutlass#3946 (2026-11-27).
+          22 units (with CL-2's and CL-3's fixes for those two); 18 are also proved equal to
+          their specs (ACCEPT); gemm_bf16_tn_gelu, gemm_e4m3_blockwise and
+          gemm_mxfp8_blockscaled have no spec (VERIFIED), and gemm_bf16_tn_silu's equivalence
+          stays undecided. Reported upstream as NVIDIA/cutlass#3946 (2026-11-27).
 
 
-2. Units Volta cannot check yet
--------------------------------
+CL-2  SM100 block-scaled GEMMs: the next k-tile's tcgen05.cp overwrites the Tensor Memory scale
+      factors while the previous k-tile's MMAs may still read them (latent)
+Where:    include/cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp:1018-1019 and
+          :1065-1066, `copy(tiled_copy_s2t_SFA, thr_tCsSFA_s2t(_,_,_,_,read_stage),
+          thr_tCtSFA_s2t)` (and SFB): one TMEM scale-factor buffer (`thr_tCtSFA_s2t` has no
+          stage index), refilled every k-tile, then read by that k-tile's MMAs.
+Volta:    gemm_mxfp8_blockscaled RACE-CONDITION, tensor-operation ordering: 12 WriteWrite
+          conflicts between consecutive `tcgen05.cp.cta_group::1.32x128b.warpx4` of SFA (PTX
+          line 1229) and of SFB (line 1234), and 768 ReadWrite conflicts between the four
+          block-scaled `tcgen05.mma` of a k-tile (lines 1261, 1291, 1321, 1351) and the next
+          k-tile's two copies, on the same Tensor Memory cells (column 256 on); nothing else.
+What:     The MMA thread issues, per k-tile, tcgen05.cp of the stage's scale factors into the
+          one TMEM buffer, then the MMAs that read them, then tcgen05.commit to free the
+          shared-memory stage; the next k-tile's tcgen05.cp follows with no wait. PTX ISA 9.0
+          9.7.16.6.2: "The asynchronous tcgen05 operations may execute and complete in a
+          different order than they were issued", except five pipelined pairs, among them
+          tcgen05.cp -> tcgen05.mma but neither tcgen05.mma -> tcgen05.cp nor tcgen05.cp ->
+          tcgen05.cp. So nothing orders the copy after the earlier MMAs' scale reads: per the
+          ISA an MMA may read the next k-tile's scales. It holds if the tensor pipe executes one
+          thread's tcgen05 ops in order, which the ISA does not promise.
+Reach:    every SM100 block-scaled CUTLASS GEMM through this collective (MXFP8, MXF4, NVFP4:
+          examples 72a-c); the sm100 array, sparse, rcggemm and mixed TMA/cp.async block-scaled
+          collectives and the sm103 and sm107 ones copy into an unstaged TMEM buffer the same
+          way (read, not run).
+Fix:      a tcgen05.fence::before_thread_sync before each refill (9.7.16.6.3: "An asynchronous
+          tcgen05 operation prior to a tcgen05.fence::before_thread_sync is ordered before all
+          subsequent tcgen05 and the execution ordering operations"), or double-buffering the
+          TMEM scale factors by k-tile.
+Status:   with the fence (cutlass.py FIXES) gemm_mxfp8_blockscaled's graph is VERIFIED (with
+          CL-1's fix too). Reported upstream as NVIDIA/cutlass#3947 (2026-11-27; no earlier
+          issue or PR: #3331 concerns which CTA issues the copy in 2-SM mode, #2974 is a fence
+          question).
 
-V-1   gemm_bf16_tn_beta, gemm_bf16_tn_col_bias, gemm_bf16_tn_row_bias_relu: ERROR, "value kind
-      mismatch (packed pair used as a scalar)" in the epilogue's C or bias fusion.
-V-2   sm80_f16_tensorop, sm80_f16_batched, sm80_sgemm_simt, sm80_tf32_tensorop,
-      gemm_bf16_tn_cpasync: UNSUPPORTED, a generic (spaceless) `ld`/`st`.
-V-3   gemm_bf16_tn_nosmem, gemm_e4m3_blockwise: UNSUPPORTED, a TMA into shared memory off the
-      1024-byte swizzle boundary (nonzero swizzle base offset).
-V-4   gemm_tf32_tn_128x128: UNSUPPORTED, `tcgen05.mma.kind::tf32`.
-V-5   gemm_mxfp8_blockscaled: UNSUPPORTED, block-scaled MMA scale factors at a TMEM lane offset.
-V-6   gemm_bf16_tn_streamk: UNSUPPORTED, an untyped `ld` the parser rejects.
-V-7   fmha_fwd_f16_d128: UNSUPPORTED, `cvta.local`.
-V-8   conv2d_fprop_f16: UNSUPPORTED, the `.im2col_no_offs` TMA store form.
 
-sm80_bf16_tensorop_relu is RACE-FREE and ACCEPT.
+CL-3  SM100 cp.async GEMM mainloop: no proxy fence between the stage's cp.async writes (generic
+      proxy) and the tcgen05.mma reads of them (async proxy) (latent)
+Where:    include/cutlass/gemm/collective/sm100_mma_cpasync_warpspecialized.hpp: the producer
+          (:510-520) copies a stage with cp.async and arrives with cpasync_barrier_arrive
+          (`cp.async.mbarrier.arrive.shared::cta.b64`); the MMA warp (:565-577) waits on the
+          stage and issues tcgen05.mma; neither runs fence.proxy.async (nor does the kernel,
+          sm100_gemm_cpasync_warpspecialized.hpp). The mixed TMA/cp.async collectives
+          (sm100_mma_mixed_tma_cpasync_warpspecialized.hpp and its block-scaled twin) have
+          the same shape (read, not run).
+Volta:    gemm_bf16_tn_cpasync (KernelWarpSpecialized1SmSm100, the CollectiveBuilder's non-TMA
+          path) RACE-CONDITION, proxy ordering: ProxyOrderViolation WriteRead, missing
+          ProxyAsync, between `cp.async.ca.shared.global` (PTX line 1762) and `tcgen05.mma`
+          (line 2168) on a stage's bytes.
+What:     PTX ISA 9.0 9.7.9.25.2: only "the cp{.reduce}.async.bulk operations are performed in
+          the asynchronous proxy", so non-bulk cp.async writes shared memory through the generic
+          proxy; 9.7.16.6.5: "The shared memory accesses by tcgen05.mma and tcgen05.cp operations
+          are performed in the asynchronous proxy ... Accessing the same memory location across
+          multiple proxies needs a cross-proxy fence ... fence.proxy.async". The mbarrier
+          completion orders the copies before the MMA warp's wait, but no proxy fence makes them
+          visible to the async proxy, so an MMA may read a stage's stale bytes.
+Fix:      `cutlass::arch::fence_view_async_shared();` in the MMA warp after each consumer_wait.
+Status:   with it (cutlass.py FIXES) gemm_bf16_tn_cpasync is RACE-FREE and ACCEPT (with CL-1's
+          fix too). Already proposed upstream: NVIDIA/cutlass PR #3799 (open, 2026-10-29) adds the
+          same fence to this collective and both mixed ones, after #3724's SM90 fix (#3721);
+          reported as NVIDIA/cutlass#3948 (2026-11-27), citing it.
+
+
+2. Units Volta cannot check yet, and open leads
+-----------------------------------------------
+
+V-1   gemm_bf16_tn_streamk: UNSUPPORTED, `ld.global.acquire.gpu.b32` (stream-K's cross-CTA flags;
+      acquire/release atomic protocols are not modeled, and one CTA is analyzed).
+V-2   fmha_fwd_f16_d128: the run aborts at a branch on a symbolic predicate (the online softmax's
+      conditional rescale), so its graph is a prefix. On that prefix two further Volta gaps
+      show: a tcgen05.ld is ordered before a later tcgen05.st of the same cells only by the
+      register dependency (the S row maximum feeds the stored P statistics), which Volta does not
+      model, and the allocating MMA warp's tcgen05.alloc reaches the softmax warps' TMEM uses only
+      through the MMA's completion, which carries no thread's events in G_HB.
+
+L-1   (open lead) gemm_bf16_tn_nosmem: with an empty epilogue storage the kernel's SharedStorage
+      places smem_A 512 bytes past a 1024-byte boundary (TensorStorage is aligned_struct<128>,
+      after the pipelines), 128B-swizzled, and CuTe's make_umma_desc always sets base_offset = 0
+      (cute/arch/mma_sm100_desc.hpp:783). PTX ISA 9.0 9.7.16.4.1: "the base offset must be a
+      non-zero value ... (pattern start addr >> 0x7) & 0x7" when the repeating pattern does not
+      start at the 1024-byte boundary. Whether that applies depends on where a TMA-written tile's
+      pattern starts (5.5.7 gives the TMA a swizzle base offset (dstMem / 128) % 8, i.e. absolute
+      address bits) and on the dynamic shared memory base's alignment on hardware. Volta swizzles
+      both TMA and MMA by absolute address bits, under which the kernel is ACCEPT.
+
+Every other unit runs to a verdict: sm80_bf16_tensorop_relu, sm80_f16_tensorop,
+sm80_f16_batched, sm80_sgemm_simt, sm80_tf32_tensorop and gemm_bf16_tn_nosmem are RACE-FREE and
+ACCEPT; the rest are CL-1 and CL-2.
 
 
 3. Volta changes the SM100 kernels needed
@@ -91,3 +165,20 @@ Before these, every SM100 unit was UNSUPPORTED or CHECK-FAILED on Volta's own ac
   the issuer's own accesses): a stage refill follows the stage's previous TMA load through
   TMA -> MMA -> tcgen05.commit -> refill. This settles open question (a) of
   volta_findings.txt for async-proxy chains.
+
+The units Volta could not run at first needed, each with a test:
+
+- Spaceless `ld`/`st` resolve each address through the generic windows (shared, param and a new
+  local one); `cvta.global` and `cvta{.to}.local` are modeled (the SM80 GEMMs, cp.async, FMHA).
+- A 32-bit word whose low half is zero, read by a float operation, is its high half widened to
+  f32: nvcc's bf16-to-f32 (`shl.b32 16`, `and.b32 0xffff0000`), taking the halves as bf16 (the C
+  and bias epilogues).
+- `ld` takes its state space before the semantics (`ld.global.acquire.gpu`), as ptxas does.
+- `call vprintf` is a no-op returning 0 (FMHA).
+- `tcgen05.mma.kind::tf32`, K = 8 of 4-byte operands.
+- A TMA box off its swizzle pattern's boundary is legal, with the base offset ISA 5.5.7 gives.
+- A Tensor Memory address's top two bits select the cell's byte (CuTe's scale-factor IDs).
+- The `.im2col_no_offs` TMA store (the conv epilogue).
+- Two async tcgen05 operations of one thread with its tcgen05.fence::before_thread_sync between
+  their issues are ordered (PTX ISA 9.7.16.6.3), a pipeline rule beside the ISA's pipelined pairs
+  (CL-2's control).

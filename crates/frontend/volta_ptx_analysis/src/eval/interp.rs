@@ -25,13 +25,15 @@ use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
-use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, SpecialRegKind};
+use crate::ir::symbols::{
+    MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, SpecialRegKind, resolve_generic,
+};
 use crate::ir::tcgen05::Tcgen05FenceDirection;
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
-    BarrierAlignment, BinOp, Clamp, ClusterLaunch, CpAsyncSrcSize, FenceRelease, InstrId,
-    LoweredInstr, LoweredProgram, MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand,
-    TensormapFence,
+    AddressSpace, BarrierAlignment, BinOp, Clamp, ClusterLaunch, CpAsyncSrcSize, FenceRelease,
+    InstrId, LoweredInstr, LoweredProgram, MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace,
+    Operand, TensormapFence,
 };
 use volta_common::logging::{info, warn};
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, PrmtSelector, StringId, Type, Width};
@@ -739,7 +741,8 @@ impl<'p> Interpreter<'p> {
                 ty,
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
-                let v = self.mem_read(t, pc, *space, addr, ty.size_bytes() as u64)?;
+                let (space, addr) = resolve_space(*space, addr);
+                let v = self.mem_read(t, pc, space, addr, ty.size_bytes() as u64)?;
                 let v = self.canon_loaded(t, pc, *ty, *dst, v)?;
                 self.write_reg(t, *dst, v);
             }
@@ -752,18 +755,19 @@ impl<'p> Interpreter<'p> {
                 ty,
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
+                let (space, addr) = resolve_space(*space, addr);
                 let width = ty.size_bytes() as u64;
                 // A vector load is one access of the total size (PTX ISA
                 // 6.4.1), so bounds and alignment are checked once for the
                 // whole footprint - else a v4 could straddle two arrays.
-                if *space == MemSpace::Param {
+                if space == MemSpace::Param {
                     self.param_at(t, pc, addr, dst.len() as u64 * width)?;
                 } else {
-                    self.check_bounds(t, pc, *space, addr, dst.len() as u64 * width)?;
+                    self.check_bounds(t, pc, space, addr, dst.len() as u64 * width)?;
                 }
-                self.check_alignment(t, pc, *space, addr, dst.len() as u64 * width)?;
+                self.check_alignment(t, pc, space, addr, dst.len() as u64 * width)?;
                 for (k, reg) in dst.iter().enumerate() {
-                    let v = self.mem_read(t, pc, *space, addr + k as u64 * width, width)?;
+                    let v = self.mem_read(t, pc, space, addr + k as u64 * width, width)?;
                     let v = self.canon_loaded(t, pc, *ty, *reg, v)?;
                     self.write_reg(t, *reg, v);
                 }
@@ -777,9 +781,10 @@ impl<'p> Interpreter<'p> {
                 ty,
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
+                let (space, addr) = resolve_space(*space, addr);
                 let v = self.operand_value(t, pc, src)?;
                 let v = self.canon_stored(t, pc, *ty, operand_reg_bits(src), v)?;
-                self.mem_write(t, pc, *space, addr, ty.size_bytes() as u64, v)?;
+                self.mem_write(t, pc, space, addr, ty.size_bytes() as u64, v)?;
             }
 
             LoweredInstr::StoreVec {
@@ -790,16 +795,17 @@ impl<'p> Interpreter<'p> {
                 ty,
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
+                let (space, addr) = resolve_space(*space, addr);
                 let width = ty.size_bytes() as u64;
                 // As for `LoadVec`: a vector store is one access of the total
                 // size, so its whole footprint must fit in one region and align
                 // to the total size.
-                self.check_bounds(t, pc, *space, addr, src.len() as u64 * width)?;
-                self.check_alignment(t, pc, *space, addr, src.len() as u64 * width)?;
+                self.check_bounds(t, pc, space, addr, src.len() as u64 * width)?;
+                self.check_alignment(t, pc, space, addr, src.len() as u64 * width)?;
                 for (k, op) in src.iter().enumerate() {
                     let v = self.operand_value(t, pc, op)?;
                     let v = self.canon_stored(t, pc, *ty, operand_reg_bits(op), v)?;
-                    self.mem_write(t, pc, *space, addr + k as u64 * width, width, v)?;
+                    self.mem_write(t, pc, space, addr + k as u64 * width, width, v)?;
                 }
             }
 
@@ -1913,6 +1919,7 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::CpAsyncBulkTensorStore {
+                mode,
                 tensormap_base,
                 tensormap_offset,
                 coords,
@@ -1922,6 +1929,7 @@ impl<'p> Interpreter<'p> {
                 let store = self.exec_cp_async_bulk_tensor_store(
                     t,
                     pc,
+                    *mode,
                     tensormap_base,
                     *tensormap_offset,
                     coords,
@@ -2301,6 +2309,15 @@ impl<'p> Interpreter<'p> {
                     self.arena.as_int_const(hi),
                 ) {
                     return Ok(Self::recombine_pair_halves(&mut self.arena, l, h, w));
+                }
+                // A word whose low half is zero holds its high half widened to f32: nvcc's
+                // bf16-to-f32 (`shl.b32 16`, `and.b32 0xffff0000`). Halves are taken as bf16
+                // here, as only bf16 widens by its bits; an f16 half would read the same.
+                if half_bits == Some(16)
+                    && self.arena.as_int_const(lo) == Some(0)
+                    && self.arena.as_int_const(hi).is_none()
+                {
+                    return Ok(hi);
                 }
                 Err(EvalError::ValueKindMismatch {
                     thread: t,
@@ -2926,4 +2943,13 @@ fn operand_reg_bits(op: &Operand) -> Option<u32> {
 enum Element {
     Symbol(StringId),
     Given(i64),
+}
+
+/// The space and address an access names: a generic one through the windows of
+/// `symbols::resolve_generic`, a named one as given.
+fn resolve_space(space: AddressSpace, addr: u64) -> (MemSpace, u64) {
+    match space {
+        AddressSpace::Space(space) => (space, addr),
+        AddressSpace::Generic => resolve_generic(addr),
+    }
 }

@@ -22,6 +22,9 @@
 //!     the copy's Tensor Memory writes and the MMA's Tensor Memory operand reads (`scale_A`,
 //!     `scale_B`, `[a-tmem]`) on shared cells; an MMA's accumulator, and a copy after an MMA,
 //!     are not covered.
+//!   - Fenced in one thread ([`PipelineRule::FencedInThread`]): any two async `tcgen05`
+//!     operations of one thread with its `tcgen05.fence::before_thread_sync` between their
+//!     issues (9.7.16.6.3), on the Tensor Memory cells both touch.
 //!   - Waited loads and stores ([`PipelineRule::WaitedLoadStore`]): `tcgen05.st` ->
 //!     `tcgen05.ld`, `st` -> `st` or `ld` -> `st` (pairs 11-13), issued by one warp in that
 //!     order, with the earlier operation's own `tcgen05.wait` (`::st` for a store, `::ld` for
@@ -40,7 +43,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use volta_graph::{
     AccessMode, AsyncOp, AsyncOpId, AsyncOpKind, CollectiveSide, EventGraph, EventId, EventKind,
-    ExecContext, Footprint, GenerationKind, OperandRole, Space, SyncObjectKind, ThreadIx,
+    ExecContext, FenceKind, Footprint, GenerationKind, OperandRole, Space, SyncObjectKind,
+    ThreadIx,
 };
 
 const WARP_SIZE: u32 = 32;
@@ -56,6 +60,9 @@ pub enum PipelineRule {
     /// `tcgen05.st` -> `.ld`, `.st` -> `.st` or `.ld` -> `.st` of one warp, the earlier one
     /// waited for in between.
     WaitedLoadStore,
+    /// Two async `tcgen05` operations of one thread with its `tcgen05.fence::before_thread_sync`
+    /// between their issues.
+    FencedInThread,
 }
 
 /// One edge `(a, b)` of `E_pipeline`.
@@ -150,6 +157,7 @@ impl PipelineEdges {
         self.accumulator_chain_edge(graph, a, b)
             .or_else(|| copy_then_mma_edge(graph, a, b))
             .or_else(|| waited_load_store_edge(graph, a, b))
+            .or_else(|| fenced_in_thread_edge(graph, a, b))
     }
 
     /// [`PipelineRule::MmaAccumulatorChain`]: `a` an accumulator effect of an MMA chained before
@@ -370,6 +378,54 @@ fn waited_before(graph: &EventGraph, earlier: &AsyncOp, warp: u32, later: &Async
                 .releases
                 .iter()
                 .any(|&r| graph.thread_of(r) == Some(later.issuer) && r < later.issue)
+    })
+}
+
+/// `event`'s operation, footprint and role, if it is an async `tcgen05` op's Tensor Memory effect.
+fn tensor_effect(
+    graph: &EventGraph,
+    event: EventId,
+) -> Option<(AsyncOpId, Footprint, OperandRole)> {
+    let ev = graph.event(event);
+    let (ExecContext::Async(op), EventKind::Access(acc)) = (ev.ctx, ev.kind) else {
+        return None;
+    };
+    let access = graph.access(acc);
+    (matches!(
+        graph.async_op(op).kind,
+        AsyncOpKind::Tcgen05Mma
+            | AsyncOpKind::Tcgen05Cp
+            | AsyncOpKind::Tcgen05Ld
+            | AsyncOpKind::Tcgen05St
+    ) && access.space == Space::Tensor)
+        .then_some((op, access.footprint, access.role))
+}
+
+/// [`PipelineRule::FencedInThread`]: PTX ISA 9.7.16.6.3, "An asynchronous tcgen05 operation
+/// prior to a tcgen05.fence::before_thread_sync is ordered before all subsequent tcgen05 and
+/// the execution ordering operations": `a`'s and `b`'s ops, one thread's, fenced in between.
+fn fenced_in_thread_edge(graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
+    let (x, ax, from_role) = tensor_effect(graph, a)?;
+    let (y, by, to_role) = tensor_effect(graph, b)?;
+    let (earlier, later) = (graph.async_op(x), graph.async_op(y));
+    if earlier.issuer != later.issuer || earlier.issue >= later.issue {
+        return None;
+    }
+    let order = graph.program_order(earlier.issuer);
+    let start = order.partition_point(|&e| e <= earlier.issue);
+    let end = order.partition_point(|&e| e < later.issue);
+    let fenced = order[start..end]
+        .iter()
+        .any(|&e| graph.event(e).kind == EventKind::Fence(FenceKind::Tcgen05BeforeThreadSync));
+    if !fenced {
+        return None;
+    }
+    Some(PipelineEdge {
+        rule: PipelineRule::FencedInThread,
+        from: a,
+        to: b,
+        roles: (from_role, to_role),
+        cells: shared_cells(ax, by)?,
     })
 }
 

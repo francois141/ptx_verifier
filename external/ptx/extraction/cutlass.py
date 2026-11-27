@@ -39,10 +39,21 @@ BUILD = REPO_ROOT / "target" / "cutlass-build"
 DOCKER_IMAGE = "volta-thunderkittens:cuda-12.9.1"
 ENTRY = re.compile(r"^\.(?:visible |weak )?entry (\S+?)\(", re.MULTILINE)
 PATCHED_INCLUDE = BUILD / "patched-include"
-# cutlass/bugs.txt's fixes, as (header under include/, text, replacement, count).
+# cutlass/bugs.txt's fixes, as (header under include/, text, replacement, count). CL-1: one lane
+# issues each epilogue TMA store.
 TMA_STORE_ONE_LANE = ("    bool issue_tma_store = warp_idx == 0;\n",
                       "    bool issue_tma_store = (warp_idx == 0) && cute::elect_one_sync();\n")
-FIXES = [("cutlass/epilogue/collective/sm100_epilogue_tma_warpspecialized.hpp", *TMA_STORE_ONE_LANE, 2)]
+# CL-3: a proxy fence between the stage's cp.async (generic proxy) writes and the MMA's reads.
+CPASYNC_PROXY_FENCE = ("      mainloop_pipeline.consumer_wait(mainloop_pipe_consumer_state);\n",
+                       "      mainloop_pipeline.consumer_wait(mainloop_pipe_consumer_state);\n"
+                       "      cutlass::arch::fence_view_async_shared();\n")
+# CL-2: order the previous k-tile's MMAs before the copy that refills their scale factors.
+SF_COPY = "copy(tiled_copy_s2t_SFA, thr_tCsSFA_s2t(_,_,_,_,read_stage), thr_tCtSFA_s2t);"
+SF_COPY_AFTER_FENCE = (SF_COPY, "\n#if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)\n"
+                       'asm volatile("tcgen05.fence::before_thread_sync;" ::: "memory");\n#endif\n' + SF_COPY)
+FIXES = [("cutlass/epilogue/collective/sm100_epilogue_tma_warpspecialized.hpp", *TMA_STORE_ONE_LANE, 2),
+         ("cutlass/gemm/collective/sm100_mma_cpasync_warpspecialized.hpp", *CPASYNC_PROXY_FENCE, 1),
+         ("cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp", *SF_COPY_AFTER_FENCE, 2)]
 
 NVCC = ("nvcc -std=c++17 -arch=sm_100a -O3 -DNDEBUG --expt-relaxed-constexpr -w "
         "-DCUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL -DCUTLASS_ENABLE_GDC_FOR_SM100=1 "

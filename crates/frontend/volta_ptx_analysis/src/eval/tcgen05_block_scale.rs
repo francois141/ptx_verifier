@@ -121,13 +121,24 @@ impl<'p> Interpreter<'p> {
         count: u32,
     ) -> EvalResult<Vec<ExprId>> {
         let address = self.effective_addr(t, pc, &base, offset)? as u32;
-        if address >> 16 != 0 {
+        // A Tensor Memory address's top two bits select a byte of the cell: CuTe keeps the
+        // scale factor's byte there and copies it into `idesc`'s Scale Factor ID.
+        let (lane, address_byte) = ((address >> 16) & 0x3FFF, address >> 30);
+        if address_byte != 0 && address_byte != byte {
+            return Err(EvalError::InvalidEncoding {
+                pc,
+                what: format!(
+                    "tcgen05.mma {role:?} address {address:#x} selects byte {address_byte}, \
+                     but idesc's Scale Factor ID selects byte {byte}"
+                ),
+            });
+        }
+        if lane != 0 {
             return Err(EvalError::Unsupported {
                 pc,
                 what: format!(
-                    "tcgen05.mma {role:?} at lane {} is not modeled (its 32-lane layout \
-                     starts at lane 0)",
-                    address >> 16
+                    "tcgen05.mma {role:?} at lane {lane} is not modeled (its 32-lane layout \
+                     starts at lane 0)"
                 ),
             });
         }

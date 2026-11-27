@@ -8,6 +8,7 @@ use crate::frontend::ast::{
 };
 use crate::frontend::lex::DottedIdent;
 
+use crate::ir::tensor_map::TensorStoreMode;
 use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorLoadMode, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
@@ -686,23 +687,36 @@ fn lower_cp_async_bulk_tensor_store(
 
     // `.tile` is the ISA's default load mode, so it may be omitted.
     let form = match given.as_slice() {
-        [dim, global, shared, tile, group] if tile == "tile" => Some((dim, global, shared, group)),
-        [dim, global, shared, group] => Some((dim, global, shared, group)),
+        [dim, global, shared, tile, group] if tile == "tile" => {
+            Some((dim, global, shared, group, TensorStoreMode::Tile))
+        }
+        [dim, global, shared, im2col, group] if im2col == "im2col_no_offs" => {
+            Some((dim, global, shared, group, TensorStoreMode::Im2colNoOffsets))
+        }
+        [dim, global, shared, group] => Some((dim, global, shared, group, TensorStoreMode::Tile)),
         _ => None,
     };
 
-    let dim = match form {
-        Some((dim, global, shared, group))
+    let (dim, mode) = match form {
+        Some((dim, global, shared, group, mode))
             if global == "global" && shared == "shared::cta" && group == "bulk_group" =>
         {
-            tensor_rank(dim).ok_or_else(|| unsupported(NAME, format!("modifier .{dim}")))?
+            let rank =
+                tensor_rank(dim).ok_or_else(|| unsupported(NAME, format!("modifier .{dim}")))?;
+            if mode == TensorStoreMode::Im2colNoOffsets && rank < 3 {
+                return Err(unsupported(
+                    NAME,
+                    "an .im2col_no_offs store of fewer than 3 dims",
+                ));
+            }
+            (rank, mode)
         }
         _ => {
             return Err(unsupported(
                 NAME,
                 format!(
-                    "store form .{} (only .Nd.global.shared::cta{{.tile}}.bulk_group{{.L2::cache_hint}} \
-                     is modeled)",
+                    "store form .{} (only .Nd.global.shared::cta{{.tile,.im2col_no_offs}}.bulk_group\
+                     {{.L2::cache_hint}} is modeled)",
                     given.join(".")
                 ),
             ));
@@ -742,6 +756,7 @@ fn lower_cp_async_bulk_tensor_store(
 
     ctx.emit(
         LoweredInstr::CpAsyncBulkTensorStore {
+            mode,
             tensormap_base,
             tensormap_offset,
             coords,

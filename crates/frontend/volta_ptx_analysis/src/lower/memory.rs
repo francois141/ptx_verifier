@@ -10,8 +10,12 @@ use crate::frontend::ast::{
 use crate::frontend::instr_parse::is_cache_perf_hint;
 use crate::frontend::lex::DottedIdent;
 
-use crate::ir::symbols::{PARAM_GENERIC_BASE, ParamLayout, RegId, SHARED_GENERIC_BASE};
-use crate::ir::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
+use crate::ir::symbols::{
+    LOCAL_GENERIC_BASE, PARAM_GENERIC_BASE, ParamLayout, RegId, SHARED_GENERIC_BASE,
+};
+use crate::ir::{
+    AddressSpace, BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp,
+};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -289,7 +293,7 @@ pub(super) fn lower_load(
         }
     };
 
-    let space = ctx.convert_space(*space, "ld")?;
+    let space = ctx.convert_access_space(*space, "ld")?;
     let instr_name = format!("ld.{:?}", ty);
     check_vec_arity("ld", *vec, dst)?;
 
@@ -370,7 +374,7 @@ pub(super) fn lower_store(
         }
     };
 
-    let space = ctx.convert_space(*space, "st")?;
+    let space = ctx.convert_access_space(*space, "st")?;
     let instr_name = format!("st.{:?}", ty);
     check_vec_arity("st", *vec, src)?;
 
@@ -641,12 +645,12 @@ pub(super) fn lower_cvta(
         dst,
         src,
     } = cvta;
-    // Generic loads and stores stay rejected, so a generic shared or param
-    // address is only arithmetic between conversions (or a TMA tensor-map
-    // operand); its window keeps that exact.
+    // A generic load or store resolves its address through these windows
+    // (`symbols::resolve_generic`), so the conversions only shift by the base.
     let window = match space {
         StateSpace::Shared if *ty == ScalarType::U64 => Some(SHARED_GENERIC_BASE),
         StateSpace::Param if *ty == ScalarType::U64 => Some(PARAM_GENERIC_BASE),
+        StateSpace::Local if *ty == ScalarType::U64 => Some(LOCAL_GENERIC_BASE),
         _ => None,
     };
     if let Some(window) = window {
@@ -665,26 +669,23 @@ pub(super) fn lower_cvta(
         };
         return ctx.emit(instr, predicate);
     }
-    // Otherwise only `cvta.to.global` is accepted, as the identity (global
+    // Otherwise only `cvta{.to}.global` is accepted, as the identity (global
     // is identity-mapped in the generic window). Other forms would mint
-    // wrong-space or arbitrary addresses (or are unused), so reject.
-    if *to_generic || *space != StateSpace::Global {
+    // wrong-space or arbitrary addresses, so reject.
+    if *space != StateSpace::Global {
         let form = format!(
             "cvta{}.{}",
             if *to_generic { "" } else { ".to" },
             format!("{:?}", space).to_lowercase()
         );
-        let reason = if *space == StateSpace::Global {
-            // Necessarily the to-generic direction here.
-            "cvta.global (global -> generic) would also be the identity, \
-             but the corpus never uses it; only cvta.to.global is modeled"
-        } else {
-            "only cvta.to.global (the identity) and cvta{.to}.{shared,param}.u64 \
-             (generic windows at `SHARED_GENERIC_BASE`, `PARAM_GENERIC_BASE`) are modeled"
-        };
         return Err(LowerError::UnsupportedInstruction {
             instruction: form,
-            reason: Some(reason.to_string()),
+            reason: Some(
+                "only cvta{.to}.global (the identity) and cvta{.to}.{shared,param,local}.u64 \
+                 (generic windows at `SHARED_GENERIC_BASE`, `PARAM_GENERIC_BASE`, \
+                 `LOCAL_GENERIC_BASE`) are modeled"
+                    .to_string(),
+            ),
         });
     }
     let dst = ctx.resolve_dst(dst)?;
@@ -801,7 +802,7 @@ pub(super) fn lower_ld_global_nc(
             ctx.emit(
                 LoweredInstr::LoadVec {
                     dst: dst_regs,
-                    space: MemSpace::Global,
+                    space: AddressSpace::Space(MemSpace::Global),
                     base,
                     offset,
                     ty: elem_type,
@@ -815,7 +816,7 @@ pub(super) fn lower_ld_global_nc(
             ctx.emit(
                 LoweredInstr::Load {
                     dst,
-                    space: MemSpace::Global,
+                    space: AddressSpace::Space(MemSpace::Global),
                     base,
                     offset,
                     ty: elem_type,

@@ -1,0 +1,1284 @@
+{
+  "description": "CUTLASS sm100 2-D fprop convolution, f16 NHWC 1 x 8 x 16 x 64, 128 KRSC 3 x 3 filters, pad 1, stride 1 (implicit GEMM M = N = 128, K = 576): one 128x128x64 tile, CLC scheduler, with the cutlass/bugs.txt fix",
+  "kernel": "_ZN7cutlass13device_kernelINS_4conv6kernel13ConvUniversalINS1_16ConvProblemShapeILNS1_8OperatorE0ELi2EEENS1_10collective14CollectiveConvINS1_47MainloopSm100TmaUmmaWarpSpecializedImplicitGemmILS5_0ELi6ELi2ELi1ELi2EN4cute5tupleIJNSA_1CILi1EEESD_SD_EEENS_4arch5Sm100EEENSB_IJNSC_ILi128EEESI_NSB_IJNSC_ILi64EEEEEEEEENS_6half_tESM_NSA_8TiledMMAINSA_8MMA_AtomIJNSA_20SM100_MMA_F16BF16_SSISM_SM_fLi128ELi128ELNSA_4UMMA5MajorE0ELSR_0ELNSQ_7ScaleInE0ELSS_0EEEEEENSA_6LayoutISE_NSB_IJNSC_ILi0EEESW_SW_EEEEENSB_IJNSA_10UnderscoreESZ_SZ_EEEEENS7_6detail27Sm100ImplicitGemmTileTraitsINSA_20SM90_TMA_LOAD_IM2COLENSA_14ComposedLayoutINSA_7SwizzleILi3ELi4ELi3EEENSA_18smem_ptr_flag_bitsILi16EEENSV_INSB_IJNSC_ILi8EEESJ_EEENSB_IJSJ_SD_EEEEEEEvEENS13_INSA_13SM90_TMA_LOADES1E_vEEEENS_8epilogue10collective18CollectiveEpilogueINS1J_23Sm100TmaWarpSpecializedILi4ELi2ELi32ELb0ELb1EEEJSL_NSB_IJNSV_ISI_SD_EENSV_INSC_ILi32EEESD_EEEEEvNSB_IJNSB_IJlllEEESD_SW_EEESM_S1T_NS1J_6fusion15FusionCallbacksIS1N_NS1U_17LinearCombinationISM_fvfLNS_15FloatRoundStyleE2EEESL_S1R_JEEENSA_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES14_NS15_INS16_ILi2ELi4ELi3EEES19_NSV_INSB_IJS1A_S1P_EEENSB_IJS1P_SD_EEEEEEENSA_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENSA_21SM90_TMA_STORE_IM2COLES28_S2A_S2A_EEEvvEEEEvNT_6ParamsE",
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "cluster": [
+    1,
+    1,
+    1
+  ],
+  "cta": [
+    0,
+    0,
+    0
+  ],
+  "dynamic_shared_bytes": 214016,
+  "arrays": [
+    {
+      "name": "act",
+      "kind": "in",
+      "dtype": "f16",
+      "shape": [
+        1,
+        8,
+        16,
+        64
+      ],
+      "base": "0x10000000"
+    },
+    {
+      "name": "flt",
+      "kind": "in",
+      "dtype": "f16",
+      "shape": [
+        128,
+        3,
+        3,
+        64
+      ],
+      "base": "0x20000000"
+    },
+    {
+      "name": "out",
+      "kind": "out",
+      "dtype": "f16",
+      "shape": [
+        1,
+        8,
+        16,
+        128
+      ],
+      "base": "0x30000000"
+    }
+  ],
+  "params": [
+    {
+      "name": "params",
+      "struct": [
+        {
+          "offset": 0,
+          "u32": 128
+        },
+        {
+          "offset": 4,
+          "u32": 128
+        },
+        {
+          "offset": 8,
+          "u32": 64
+        },
+        {
+          "offset": 12,
+          "u32": 3
+        },
+        {
+          "offset": 16,
+          "u32": 3
+        },
+        {
+          "offset": 20,
+          "u32": 0
+        },
+        {
+          "offset": 24,
+          "u32": 0
+        },
+        {
+          "offset": 28,
+          "u32": 0
+        },
+        {
+          "offset": 32,
+          "u32": 0
+        },
+        {
+          "offset": 36,
+          "u32": 0
+        },
+        {
+          "offset": 40,
+          "u32": 0
+        },
+        {
+          "offset": 44,
+          "u32": 0
+        },
+        {
+          "offset": 48,
+          "u32": 0
+        },
+        {
+          "offset": 52,
+          "u32": 0
+        },
+        {
+          "offset": 56,
+          "u32": 0
+        },
+        {
+          "offset": 60,
+          "u32": 0
+        },
+        {
+          "offset": 64,
+          "tensor_map": {
+            "array": "act",
+            "dtype": "u16",
+            "dims": [
+              64,
+              16,
+              8,
+              1
+            ],
+            "strides": [
+              128,
+              2048,
+              16384
+            ],
+            "im2col": {
+              "lower_corner": [
+                -1,
+                -1
+              ],
+              "upper_corner": [
+                -1,
+                -1
+              ],
+              "channels_per_pixel": 64,
+              "pixels_per_column": 128
+            },
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 192,
+          "u32": 16
+        },
+        {
+          "offset": 196,
+          "u32": 2147483648
+        },
+        {
+          "offset": 200,
+          "u32": 3
+        },
+        {
+          "offset": 204,
+          "u32": 8
+        },
+        {
+          "offset": 208,
+          "u32": 2147483648
+        },
+        {
+          "offset": 212,
+          "u32": 2
+        },
+        {
+          "offset": 216,
+          "u32": 1
+        },
+        {
+          "offset": 220,
+          "u32": 0
+        },
+        {
+          "offset": 224,
+          "u32": 0
+        },
+        {
+          "offset": 228,
+          "u32": 64
+        },
+        {
+          "offset": 232,
+          "u32": 3
+        },
+        {
+          "offset": 236,
+          "u32": 3
+        },
+        {
+          "offset": 240,
+          "u32": 1
+        },
+        {
+          "offset": 244,
+          "u32": 1
+        },
+        {
+          "offset": 248,
+          "u32": 1
+        },
+        {
+          "offset": 252,
+          "u32": 1
+        },
+        {
+          "offset": 256,
+          "u32": 128
+        },
+        {
+          "offset": 260,
+          "u32": 64
+        },
+        {
+          "offset": 264,
+          "u32": 3
+        },
+        {
+          "offset": 268,
+          "u32": 3
+        },
+        {
+          "offset": 272,
+          "u32": 4294967295
+        },
+        {
+          "offset": 276,
+          "u32": 4294967295
+        },
+        {
+          "offset": 280,
+          "u32": 0
+        },
+        {
+          "offset": 284,
+          "u32": 0
+        },
+        {
+          "offset": 288,
+          "u32": 3985232928
+        },
+        {
+          "offset": 292,
+          "u32": 65535
+        },
+        {
+          "offset": 296,
+          "u32": 0
+        },
+        {
+          "offset": 300,
+          "u32": 0
+        },
+        {
+          "offset": 304,
+          "u32": 2510265072
+        },
+        {
+          "offset": 308,
+          "u32": 65074
+        },
+        {
+          "offset": 312,
+          "u32": 9
+        },
+        {
+          "offset": 316,
+          "u32": 0
+        },
+        {
+          "offset": 320,
+          "tensor_map": {
+            "array": "flt",
+            "dtype": "u16",
+            "dims": [
+              64,
+              128,
+              3,
+              3
+            ],
+            "strides": [
+              1152,
+              128,
+              384
+            ],
+            "box": [
+              64,
+              128,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 448,
+          "u32": 2505337430
+        },
+        {
+          "offset": 452,
+          "u32": 65074
+        },
+        {
+          "offset": 456,
+          "u32": 2505263664
+        },
+        {
+          "offset": 460,
+          "u32": 65074
+        },
+        {
+          "offset": 464,
+          "u32": 2505258360
+        },
+        {
+          "offset": 468,
+          "u32": 65074
+        },
+        {
+          "offset": 472,
+          "u32": 2510091652
+        },
+        {
+          "offset": 476,
+          "u32": 65074
+        },
+        {
+          "offset": 480,
+          "u32": 2510290064
+        },
+        {
+          "offset": 484,
+          "u32": 65074
+        },
+        {
+          "offset": 488,
+          "u32": 3985233240
+        },
+        {
+          "offset": 492,
+          "u32": 65535
+        },
+        {
+          "offset": 496,
+          "u32": 3985233236
+        },
+        {
+          "offset": 500,
+          "u32": 65535
+        },
+        {
+          "offset": 504,
+          "u32": 0
+        },
+        {
+          "offset": 508,
+          "u32": 0
+        },
+        {
+          "offset": 512,
+          "tensor_map": {
+            "array": "act",
+            "dtype": "u16",
+            "dims": [
+              64,
+              16,
+              8,
+              1
+            ],
+            "strides": [
+              128,
+              2048,
+              16384
+            ],
+            "im2col": {
+              "lower_corner": [
+                -1,
+                -1
+              ],
+              "upper_corner": [
+                -1,
+                -1
+              ],
+              "channels_per_pixel": 64,
+              "pixels_per_column": 128
+            },
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 640,
+          "u32": 16
+        },
+        {
+          "offset": 644,
+          "u32": 2147483648
+        },
+        {
+          "offset": 648,
+          "u32": 3
+        },
+        {
+          "offset": 652,
+          "u32": 8
+        },
+        {
+          "offset": 656,
+          "u32": 2147483648
+        },
+        {
+          "offset": 660,
+          "u32": 2
+        },
+        {
+          "offset": 664,
+          "u32": 1
+        },
+        {
+          "offset": 668,
+          "u32": 0
+        },
+        {
+          "offset": 672,
+          "u32": 0
+        },
+        {
+          "offset": 676,
+          "u32": 64
+        },
+        {
+          "offset": 680,
+          "u32": 3
+        },
+        {
+          "offset": 684,
+          "u32": 3
+        },
+        {
+          "offset": 688,
+          "u32": 1
+        },
+        {
+          "offset": 692,
+          "u32": 1
+        },
+        {
+          "offset": 696,
+          "u32": 1
+        },
+        {
+          "offset": 700,
+          "u32": 1
+        },
+        {
+          "offset": 704,
+          "u32": 128
+        },
+        {
+          "offset": 708,
+          "u32": 64
+        },
+        {
+          "offset": 712,
+          "u32": 3
+        },
+        {
+          "offset": 716,
+          "u32": 3
+        },
+        {
+          "offset": 720,
+          "u32": 4294967295
+        },
+        {
+          "offset": 724,
+          "u32": 4294967295
+        },
+        {
+          "offset": 728,
+          "u32": 0
+        },
+        {
+          "offset": 732,
+          "u32": 0
+        },
+        {
+          "offset": 736,
+          "u32": 3985229696
+        },
+        {
+          "offset": 740,
+          "u32": 65535
+        },
+        {
+          "offset": 744,
+          "u32": 2510082980
+        },
+        {
+          "offset": 748,
+          "u32": 65074
+        },
+        {
+          "offset": 752,
+          "u32": 2510291424
+        },
+        {
+          "offset": 756,
+          "u32": 65074
+        },
+        {
+          "offset": 760,
+          "u32": 0
+        },
+        {
+          "offset": 764,
+          "u32": 0
+        },
+        {
+          "offset": 768,
+          "tensor_map": {
+            "array": "flt",
+            "dtype": "u16",
+            "dims": [
+              64,
+              128,
+              3,
+              3
+            ],
+            "strides": [
+              1152,
+              128,
+              384
+            ],
+            "box": [
+              64,
+              128,
+              1,
+              1
+            ],
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "128B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 896,
+          "u32": 86
+        },
+        {
+          "offset": 900,
+          "u32": 65535
+        },
+        {
+          "offset": 904,
+          "u32": 2510262320
+        },
+        {
+          "offset": 908,
+          "u32": 65074
+        },
+        {
+          "offset": 912,
+          "u32": 2507494552
+        },
+        {
+          "offset": 916,
+          "u32": 65074
+        },
+        {
+          "offset": 920,
+          "u32": 3985233104
+        },
+        {
+          "offset": 924,
+          "u32": 65535
+        },
+        {
+          "offset": 928,
+          "u32": 3985233096
+        },
+        {
+          "offset": 932,
+          "u32": 65535
+        },
+        {
+          "offset": 936,
+          "u32": 2510293048
+        },
+        {
+          "offset": 940,
+          "u32": 65074
+        },
+        {
+          "offset": 944,
+          "u32": 1
+        },
+        {
+          "offset": 948,
+          "u32": 0
+        },
+        {
+          "offset": 952,
+          "u32": 6
+        },
+        {
+          "offset": 956,
+          "u32": 0
+        },
+        {
+          "offset": 960,
+          "u32": 0
+        },
+        {
+          "offset": 964,
+          "u32": 0
+        },
+        {
+          "offset": 968,
+          "u32": 0
+        },
+        {
+          "offset": 972,
+          "u32": 65074
+        },
+        {
+          "offset": 976,
+          "u32": 0
+        },
+        {
+          "offset": 980,
+          "u32": 0
+        },
+        {
+          "offset": 984,
+          "u32": 2504562344
+        },
+        {
+          "offset": 988,
+          "u32": 65074
+        },
+        {
+          "offset": 992,
+          "u32": 2504571845
+        },
+        {
+          "offset": 996,
+          "u32": 65074
+        },
+        {
+          "offset": 1000,
+          "u32": 2510318408
+        },
+        {
+          "offset": 1004,
+          "u32": 65074
+        },
+        {
+          "offset": 1008,
+          "u32": 3985232000
+        },
+        {
+          "offset": 1012,
+          "u32": 65535
+        },
+        {
+          "offset": 1016,
+          "u32": 1024
+        },
+        {
+          "offset": 1020,
+          "u32": 0
+        },
+        {
+          "offset": 1024,
+          "u32": 0
+        },
+        {
+          "offset": 1028,
+          "u32": 65535
+        },
+        {
+          "offset": 1032,
+          "u32": 0
+        },
+        {
+          "offset": 1036,
+          "u32": 0
+        },
+        {
+          "offset": 1040,
+          "u32": 0
+        },
+        {
+          "offset": 1044,
+          "u32": 0
+        },
+        {
+          "offset": 1048,
+          "u32": 654592
+        },
+        {
+          "offset": 1052,
+          "u32": 0
+        },
+        {
+          "offset": 1056,
+          "u32": 1065353216
+        },
+        {
+          "offset": 1060,
+          "u32": 65535
+        },
+        {
+          "offset": 1064,
+          "u32": 0
+        },
+        {
+          "offset": 1068,
+          "u32": 0
+        },
+        {
+          "offset": 1072,
+          "u32": 0
+        },
+        {
+          "offset": 1076,
+          "u32": 0
+        },
+        {
+          "offset": 1080,
+          "u32": 65536
+        },
+        {
+          "offset": 1084,
+          "u32": 0
+        },
+        {
+          "offset": 1088,
+          "u32": 2
+        },
+        {
+          "offset": 1092,
+          "u32": 6
+        },
+        {
+          "offset": 1096,
+          "u32": 589072
+        },
+        {
+          "offset": 1100,
+          "u32": 0
+        },
+        {
+          "offset": 1104,
+          "u32": 654608
+        },
+        {
+          "offset": 1108,
+          "u32": 0
+        },
+        {
+          "offset": 1112,
+          "u32": 654608
+        },
+        {
+          "offset": 1116,
+          "u32": 0
+        },
+        {
+          "offset": 1120,
+          "u32": 544
+        },
+        {
+          "offset": 1124,
+          "u32": 0
+        },
+        {
+          "offset": 1128,
+          "u32": 544
+        },
+        {
+          "offset": 1132,
+          "u32": 0
+        },
+        {
+          "offset": 1136,
+          "u32": 8
+        },
+        {
+          "offset": 1140,
+          "u32": 0
+        },
+        {
+          "offset": 1144,
+          "u32": 4
+        },
+        {
+          "offset": 1148,
+          "u32": 4
+        },
+        {
+          "offset": 1152,
+          "u32": 0
+        },
+        {
+          "offset": 1156,
+          "u32": 0
+        },
+        {
+          "offset": 1160,
+          "u32": 0
+        },
+        {
+          "offset": 1164,
+          "u32": 0
+        },
+        {
+          "offset": 1168,
+          "u32": 0
+        },
+        {
+          "offset": 1172,
+          "u32": 0
+        },
+        {
+          "offset": 1176,
+          "u32": 0
+        },
+        {
+          "offset": 1180,
+          "u32": 0
+        },
+        {
+          "offset": 1184,
+          "u32": 0
+        },
+        {
+          "offset": 1188,
+          "u32": 0
+        },
+        {
+          "offset": 1192,
+          "u32": 0
+        },
+        {
+          "offset": 1196,
+          "u32": 0
+        },
+        {
+          "offset": 1200,
+          "u32": 0
+        },
+        {
+          "offset": 1204,
+          "u32": 0
+        },
+        {
+          "offset": 1208,
+          "u32": 0
+        },
+        {
+          "offset": 1212,
+          "u32": 0
+        },
+        {
+          "offset": 1216,
+          "u32": 0
+        },
+        {
+          "offset": 1220,
+          "u32": 0
+        },
+        {
+          "offset": 1224,
+          "u32": 0
+        },
+        {
+          "offset": 1228,
+          "u32": 0
+        },
+        {
+          "offset": 1232,
+          "u32": 0
+        },
+        {
+          "offset": 1236,
+          "u32": 0
+        },
+        {
+          "offset": 1240,
+          "u32": 0
+        },
+        {
+          "offset": 1244,
+          "u32": 0
+        },
+        {
+          "offset": 1248,
+          "u32": 0
+        },
+        {
+          "offset": 1252,
+          "u32": 0
+        },
+        {
+          "offset": 1256,
+          "u32": 0
+        },
+        {
+          "offset": 1260,
+          "u32": 0
+        },
+        {
+          "offset": 1264,
+          "u32": 0
+        },
+        {
+          "offset": 1268,
+          "u32": 0
+        },
+        {
+          "offset": 1272,
+          "u32": 0
+        },
+        {
+          "offset": 1276,
+          "u32": 0
+        },
+        {
+          "offset": 1280,
+          "u32": 1
+        },
+        {
+          "offset": 1284,
+          "u32": 0
+        },
+        {
+          "offset": 1288,
+          "u32": 0
+        },
+        {
+          "offset": 1292,
+          "u32": 1
+        },
+        {
+          "offset": 1296,
+          "u32": 0
+        },
+        {
+          "offset": 1300,
+          "u32": 0
+        },
+        {
+          "offset": 1304,
+          "u32": 1
+        },
+        {
+          "offset": 1308,
+          "u32": 0
+        },
+        {
+          "offset": 1312,
+          "u32": 0
+        },
+        {
+          "offset": 1316,
+          "u32": 0
+        },
+        {
+          "offset": 1320,
+          "u32": 0
+        },
+        {
+          "offset": 1324,
+          "u32": 0
+        },
+        {
+          "offset": 1328,
+          "u32": 0
+        },
+        {
+          "offset": 1332,
+          "u32": 0
+        },
+        {
+          "offset": 1336,
+          "u32": 0
+        },
+        {
+          "offset": 1340,
+          "u32": 0
+        },
+        {
+          "offset": 1344,
+          "tensor_map": {
+            "array": "out",
+            "dtype": "f16",
+            "dims": [
+              128,
+              16,
+              8,
+              1
+            ],
+            "strides": [
+              256,
+              4096,
+              32768
+            ],
+            "im2col": {
+              "lower_corner": [
+                0,
+                0
+              ],
+              "upper_corner": [
+                0,
+                0
+              ],
+              "channels_per_pixel": 32,
+              "pixels_per_column": 128
+            },
+            "element_strides": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "swizzle": "64B",
+            "fill": "zero"
+          }
+        },
+        {
+          "offset": 1472,
+          "u32": 16
+        },
+        {
+          "offset": 1476,
+          "u32": 2147483648
+        },
+        {
+          "offset": 1480,
+          "u32": 3
+        },
+        {
+          "offset": 1484,
+          "u32": 8
+        },
+        {
+          "offset": 1488,
+          "u32": 2147483648
+        },
+        {
+          "offset": 1492,
+          "u32": 2
+        },
+        {
+          "offset": 1496,
+          "u32": 1
+        },
+        {
+          "offset": 1500,
+          "u32": 0
+        },
+        {
+          "offset": 1504,
+          "u32": 0
+        },
+        {
+          "offset": 1508,
+          "u32": 128
+        },
+        {
+          "offset": 1512,
+          "u32": 128
+        },
+        {
+          "offset": 1516,
+          "u32": 128
+        },
+        {
+          "offset": 1520,
+          "u32": 0
+        },
+        {
+          "offset": 1524,
+          "u32": 0
+        },
+        {
+          "offset": 1528,
+          "u32": 2510318408
+        },
+        {
+          "offset": 1532,
+          "u32": 65074
+        },
+        {
+          "offset": 1536,
+          "u32": 1
+        },
+        {
+          "offset": 1540,
+          "u32": 1
+        },
+        {
+          "offset": 1544,
+          "u32": 1
+        },
+        {
+          "offset": 1548,
+          "u32": 1
+        },
+        {
+          "offset": 1552,
+          "u32": 0
+        },
+        {
+          "offset": 1556,
+          "u32": 0
+        },
+        {
+          "offset": 1560,
+          "u32": 1
+        },
+        {
+          "offset": 1564,
+          "u32": 0
+        },
+        {
+          "offset": 1568,
+          "u32": 0
+        },
+        {
+          "offset": 1572,
+          "u32": 0
+        },
+        {
+          "offset": 1576,
+          "u32": 0
+        },
+        {
+          "offset": 1580,
+          "u32": 0
+        },
+        {
+          "offset": 1584,
+          "u32": 1
+        },
+        {
+          "offset": 1588,
+          "u32": 0
+        },
+        {
+          "offset": 1592,
+          "u32": 0
+        },
+        {
+          "offset": 1596,
+          "u32": 1
+        },
+        {
+          "offset": 1600,
+          "u32": 0
+        },
+        {
+          "offset": 1604,
+          "u32": 0
+        },
+        {
+          "offset": 1608,
+          "u32": 0
+        },
+        {
+          "offset": 1612,
+          "u32": 0
+        },
+        {
+          "offset": 1616,
+          "u32": 0
+        },
+        {
+          "offset": 1620,
+          "u32": 0
+        },
+        {
+          "offset": 1624,
+          "u32": 0
+        },
+        {
+          "offset": 1628,
+          "u32": 272900104
+        },
+        {
+          "offset": 1632,
+          "u32": 229384449
+        },
+        {
+          "offset": 1636,
+          "u32": 203427850
+        },
+        {
+          "offset": 1640,
+          "u32": 1405616130
+        },
+        {
+          "offset": 1644,
+          "u32": 2257113122
+        },
+        {
+          "offset": 1648,
+          "u32": 1140858880
+        },
+        {
+          "offset": 1652,
+          "u32": 17825856
+        },
+        {
+          "offset": 1656,
+          "u32": 2441248896
+        },
+        {
+          "offset": 1660,
+          "u32": 1233527040
+        }
+      ]
+    }
+  ],
+  "spec": "../specs/conv2d_fprop_3x3_pad1.spec",
+  "dims": {
+    "C": 64,
+    "H": 8,
+    "K": 128,
+    "N": 1,
+    "P": 8,
+    "Q": 16,
+    "R": 3,
+    "S": 3,
+    "W": 16
+  }
+}

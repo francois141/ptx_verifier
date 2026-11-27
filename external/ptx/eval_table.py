@@ -56,6 +56,11 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
                     ["Mamba2ChunkScanForward"],
                     "FusedGEMMAddSiLU parity-aliasing hang, latent (6)":
                     ["=sm_100a/FusedGEMMAddSiLUFloat16Kernel/kernel_1"]},
+    # cutlass/bugs.txt's numbering; each fix (cutlass.py FIXES, built into cutlass/patched/) verifies
+    "CUTLASS": {"block-scaled TMEM scale-factor refill unordered after the MMAs, latent (CL-2)":
+                ["gemm_mxfp8_blockscaled"],
+                "cp.async mainloop missing fence.proxy.async before tcgen05.mma, latent (CL-3)":
+                ["gemm_bf16_tn_cpasync"]},
     "TileLang": {"warp-specialize copy race (2)": ["matmul_warp_specialize_copy_gemm_0_1"],
                  "tcgen05 pipeliner stage-reuse race (2b)": ["gemm_sm100/matmul_kernel"]},
     # tritonbench/bugs.txt's numbering; each reproducing size has a control size that verifies
@@ -103,10 +108,8 @@ REJECTIONS = {
                        "13-conv-im2col/"]},
     # cutlass/bugs.txt's CL-1 (NVIDIA/cutlass#3946): every lane of the storing warp issues the same
     # TMA store, a race of equal values; each fixed copy (cutlass/patched/) is race free
-    "CUTLASS": {"benign": ["=gemm_bf16_tn_128x128", "gemm_bf16_nt_", "gemm_f16_nn_", "gemm_bf16_tn_colmajor_d",
-                           "gemm_bf16_tn_64x128", "gemm_f16_tn_128x256", "gemm_e4m3_tn_", "gemm_bf16_tn_2stage",
-                           "gemm_bf16_tn_batched", "gemm_bf16_tn_clc", "gemm_f16_tn_raster", "gemm_bf16_tn_relu",
-                           "gemm_bf16_tn_silu", "gemm_bf16_tn_gelu"]},
+    # FMHA's run stops at a symbolic branch, so its failing checks read a prefix (cutlass/bugs.txt V-2)
+    "CUTLASS": {"benign": ["gemm_", "conv2d_fprop_f16"], "gap": ["fmha_fwd_f16_d128"]},
     "AI compiler": {"benign": ["sm_89/MatrixVectorMultiplicationFloat8Kernel"],
                     "open": ["sm_100a/FusedGEMMAddGELUFloat8Kernel"]},
 }

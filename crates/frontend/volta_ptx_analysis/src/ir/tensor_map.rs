@@ -152,6 +152,15 @@ pub enum TensorLoadMode {
     Im2col { offsets: Vec<Operand> },
 }
 
+/// A `cp.async.bulk.tensor` store's `.load_mode` (PTX ISA 9.7.9.27.1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TensorStoreMode {
+    /// `.tile`, the default: a box of the tensor
+    Tile,
+    /// `.im2col_no_offs`: a pixel column of an im2col map, walked from `coords` with no offsets
+    Im2colNoOffsets,
+}
+
 /// What one copy through an im2col tensor map moves (PTX ISA 5.5.4, `cuTensorMapEncodeIm2col`):
 /// the bounding box's corners, one per spatial dimension innermost (W) first, as offsets from
 /// the tensor's first and last pixel, and the pixel column's size.

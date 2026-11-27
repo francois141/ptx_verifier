@@ -1,0 +1,26 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// nvcc's bf16-to-f32: a word of two bf16 halves, `shl.b32 16` widening the low one and
+// `and.b32 0xffff0000` the high one, each read as the f32 it then is. out[0] = in[0] + in[1].
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<4>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.u32 %r1, [%rd1];
+    shl.b32 %r2, %r1, 16;
+    and.b32 %r3, %r1, -65536;
+    mov.b32 %f1, %r2;
+    mov.b32 %f2, %r3;
+    add.f32 %f3, %f1, %f2;
+    st.global.f32 [%rd2], %f3;
+    ret;
+}

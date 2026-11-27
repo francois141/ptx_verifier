@@ -56,6 +56,7 @@ pub enum KSelect {
 pub enum OperandFormat {
     F16,
     Bf16,
+    Tf32,
     E4m3,
     E5m2,
 }
@@ -67,6 +68,7 @@ impl OperandFormat {
         match (kind, type_field) {
             (Tcgen05MmaKind::F16, 0) => Some(Self::F16),
             (Tcgen05MmaKind::F16, 1) => Some(Self::Bf16),
+            (Tcgen05MmaKind::Tf32, 2) => Some(Self::Tf32),
             (Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4, 0) => Some(Self::E4m3),
             (Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4, 1) => Some(Self::E5m2),
             _ => None,
@@ -75,6 +77,7 @@ impl OperandFormat {
 
     pub fn bytes(self) -> u64 {
         match self {
+            Self::Tf32 => 4,
             Self::F16 | Self::Bf16 => 2,
             Self::E4m3 | Self::E5m2 => 1,
         }
@@ -86,6 +89,7 @@ impl OperandFormat {
 pub fn k_dim(kind: Tcgen05MmaKind) -> u64 {
     match kind {
         Tcgen05MmaKind::F16 => 16,
+        Tcgen05MmaKind::Tf32 => 8,
         Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4 => 32,
     }
 }

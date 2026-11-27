@@ -1,0 +1,90 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// `.kind::tf32`: f32 operands, K = 8 (four per 16-byte core-matrix row). D[0][0] =
+// (1 + 2 + 3 + 4) + 2 (5 + 6 + 7 + 8) = 62 holds only with 4-byte elements and K = 8.
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
+    .reg .pred %p<3>;
+    .reg .b32 %r<7>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[256];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    // Thread 0 zeroes the operand tiles so the MMA reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, a_buf;
+    add.u32 %zr2, %zr1, 4096;
+ZERO_A_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_A_BUF;
+    mov.u32 %zr1, b_buf;
+    add.u32 %zr2, %zr1, 256;
+ZERO_B_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_B_BUF;
+ZEROED:
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    // tcgen05.alloc orders nothing: publish its address write to every lane.
+    bar.warp.sync 0xffffffff;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    // A row 0: f32 1..=4 at k = 0..3 (first core matrix), 5..=8 at k = 4..7 (LBO = 128
+    // bytes away). B row 0: 1.0 at k = 0..3, 2.0 at k = 4..7.
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    @%p1 st.shared.v4.b32 [%rd1+0], {0x3f800000, 0x40000000, 0x40400000, 0x40800000};
+    @%p1 st.shared.v4.b32 [%rd1+128], {0x40a00000, 0x40c00000, 0x40e00000, 0x41000000};
+    @%p1 st.shared.v4.b32 [%rd2+0], {0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000};
+    @%p1 st.shared.v4.b32 [%rd2+128], {0x40000000, 0x40000000, 0x40000000, 0x40000000};
+
+    // SwizzleMode::None, LBO = 128, SBO = 256, descriptor version 1.
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 70437464178688;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 70437464178688;
+    // dense, D=f32, A=B=tf32 (type 2), no negate/transpose, M=128, N=8.
+    mov.u32 %r2, 134351120;
+    mov.pred %p0, 0;
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::tf32 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    tcgen05.wait::ld.sync.aligned;
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    // Free the columns once every Tensor Memory use is observed complete.
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+    ret;
+}

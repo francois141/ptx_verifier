@@ -12,9 +12,9 @@ use crate::ir::{
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
 
-/// Lower a direct call. Only `__symexpf` (the paper's hook for symbolic exp)
-/// is supported. The call emits nothing; it marks the retval slot as the
-/// pending exp of the argument, which the consuming `ld.param` materializes.
+/// Lower a direct call: `__symexpf` (the paper's hook for symbolic exp) or `vprintf`. Neither
+/// emits anything: `__symexpf` marks the retval slot as the pending exp of the argument, which
+/// the consuming `ld.param` materializes; `vprintf` touches no modeled memory and returns 0.
 pub(super) fn lower_call(
     ctx: &mut LoweringContext,
     call: &CallInstr,
@@ -36,10 +36,16 @@ pub(super) fn lower_call(
             });
         }
     };
+    if target_name == "vprintf" {
+        return lower_vprintf(ctx, return_operands, predicate);
+    }
     if target_name != "__symexpf" {
         return Err(LowerError::UnsupportedInstruction {
             instruction: format!("call {}", target_name),
-            reason: Some("only calls to the __symexpf symbolic-exp hook are supported".to_string()),
+            reason: Some(
+                "only calls to the __symexpf symbolic-exp hook and vprintf are supported"
+                    .to_string(),
+            ),
         });
     }
     if predicate.is_some() {
@@ -89,6 +95,34 @@ pub(super) fn lower_call(
     }
     ctx.local_params
         .insert(ret_name, LocalParamSlot::PendingExp(src));
+    Ok(())
+}
+
+/// `call (retval), vprintf, (format, args)`: device printf's output is not modeled, so the
+/// call does nothing and its retval slot (the character count) holds 0.
+fn lower_vprintf(
+    ctx: &mut LoweringContext,
+    return_operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if predicate.is_some() {
+        return Err(LowerError::UnsupportedInstruction {
+            instruction: "call vprintf".to_string(),
+            reason: Some("predicated calls are not supported".to_string()),
+        });
+    }
+    let [AstOperand::Ident(ret)] = return_operands else {
+        return Err(LowerError::UnsupportedInstruction {
+            instruction: "call vprintf".to_string(),
+            reason: Some("vprintf returns into exactly one .param slot".to_string()),
+        });
+    };
+    let ret = ret.to_string();
+    if !ctx.local_params.contains_key(&ret) {
+        return Err(LowerError::UndefinedSymbol { name: ret });
+    }
+    ctx.local_params
+        .insert(ret, LocalParamSlot::Stored(crate::ir::Operand::ImmU64(0)));
     Ok(())
 }
 

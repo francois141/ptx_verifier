@@ -17,8 +17,8 @@ use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
 use crate::ir::{
-    CmpOp, GridDependency, InstrId, LoweredInstr, MemSpace, MulMode as LoweredMulMode, Operand,
-    Predicate, ShflMode,
+    AddressSpace, CmpOp, GridDependency, InstrId, LoweredInstr, MemSpace,
+    MulMode as LoweredMulMode, Operand, Predicate, ShflMode,
 };
 
 use super::error::{LowerError, LowerResult};
@@ -717,6 +717,18 @@ impl LoweringContext {
             reg,
             negated: pred.negated,
         })
+    }
+
+    /// The space an `ld` or `st` addresses: a spaceless one is generic, resolved per access.
+    pub(super) fn convert_access_space(
+        &self,
+        space: Option<StateSpace>,
+        instruction: &str,
+    ) -> LowerResult<AddressSpace> {
+        match space {
+            None => Ok(AddressSpace::Generic),
+            Some(_) => Ok(AddressSpace::Space(self.convert_space(space, instruction)?)),
+        }
     }
 
     /// Convert AST memory space to lowered memory space. Generic (spaceless)

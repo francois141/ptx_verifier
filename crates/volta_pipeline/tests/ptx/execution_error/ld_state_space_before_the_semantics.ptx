@@ -1,0 +1,18 @@
+// CUTLASS's stream-K flag load writes the state space before the semantics
+// (`ld.global.acquire.gpu.b32`), as ptxas accepts: it parses, and then stops at
+// lowering as every acquire load does, atomic protocols being unmodeled.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.global.acquire.gpu.b32 %r1, [%rd1];
+    ret;
+}

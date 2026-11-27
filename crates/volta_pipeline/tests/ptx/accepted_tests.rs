@@ -617,6 +617,22 @@ fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
     );
 }
 
+/// `.kind::tf32` with f32 `A` and `B`, K = 8, `SwizzleMode::None` (`LBO = 128`):
+/// `D[0][0] = 10 + 2 * 26 = 62` holds only with 4-byte elements and K = 8.
+#[test]
+fn test_tcgen05_mma_kind_tf32_numeric_correctness() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/tcgen05_mma_kind_tf32_numeric_correctness", config);
+}
+
 /// 2-byte accesses at addresses 2 mod 4 are *naturally aligned* (natural
 /// alignment is relative to the access size, not any fixed width): the
 /// ordinary f16 access pattern must keep working.
@@ -760,6 +776,32 @@ fn test_cvta_shared_round_trip() {
     analyze!("success/cvta_shared_round_trip", in_out_config(1, 4));
 }
 
+/// Spaceless `ld`/`st` (CUTLASS 2.x's epilogues, CuTe's generic pointers) resolve each address
+/// through the generic windows: shared and local ones reach their space, the rest is global.
+#[test]
+fn test_generic_ld_st_resolve_through_the_windows() {
+    analyze!("success/generic_ld_st_resolve_through_the_windows", in_out_config(1, 4));
+}
+
+/// A word whose low half is zero holds its high half widened to f32: nvcc's bf16-to-f32
+/// (`shl.b32 16`, `and.b32 0xffff0000`), as CUTLASS's epilogue reads a bf16 C or bias.
+#[test]
+fn test_bf16_pair_widened_by_shift_and_mask() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 2, 2, ArrayKind::Input),
+        array("out", 0x20000, 4, 1, ArrayKind::Output),
+    ];
+    config.params = ["in", "out"].map(|name| ParamValue::ArrayPtr(name.to_string())).to_vec();
+    analyze!("success/bf16_pair_widened_by_shift_and_mask", config);
+}
+
+/// `call vprintf` is lowered as a no-op returning 0: device printf's output is not modeled.
+#[test]
+fn test_vprintf_call_is_a_no_op() {
+    analyze!("success/vprintf_call_is_a_no_op", in_out_config(1, 2));
+}
+
 /// A host-encoded tensor map inside a struct parameter, reached through
 /// `cvta.param`: a TMA load of `in`'s rows 2-5, copied out by the thread.
 #[test]
@@ -797,6 +839,81 @@ fn test_tma_param_tensor_map_load() {
     ])];
 
     analyze!("success/tma_param_tensor_map_load", config);
+}
+
+/// A 128B-swizzled TMA box off its 1024-byte boundary takes the swizzle base offset
+/// `(dstMem / 128) % 8` (PTX ISA 5.5.7): at 512 bytes past one, row 0's chunk 0 lands at chunk 4.
+#[test]
+fn test_tma_swizzle_base_offset_follows_the_destination() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 256, ArrayKind::Input),
+        array("out", 0x20000, 4, 256, ArrayKind::Output),
+    ];
+    let map = TensorMapValue {
+        array: "in".to_string(),
+        elemtype: TensorElemType::F32,
+        dims: vec![32, 8],
+        strides: vec![128],
+        mode: TensorMapMode::Tiled {
+            box_dims: vec![32, 8],
+        },
+        element_strides: vec![1, 1],
+        interleave: TensorInterleaveLayout::None,
+        swizzle: TensorSwizzleMode::Swizzle128B,
+        swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+        fill: TensorFillMode::Zero,
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: FieldValue::TensorMap(Box::new(map)),
+        },
+        StructField {
+            offset: 128,
+            value: FieldValue::ArrayPtr("out".to_string()),
+        },
+    ])];
+    analyze!("success/tma_swizzle_base_offset_follows_the_destination", config);
+}
+
+/// An `.im2col_no_offs` TMA store walks its im2col map's pixel column from the coordinates with
+/// no offsets, one shared row of channels per pixel: out (NHWC 1 x 2 x 2 x 4) = in.
+#[test]
+fn test_tma_im2col_no_offs_store_walks_the_pixel_column() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 16, ArrayKind::Input),
+        array("out", 0x20000, 4, 16, ArrayKind::Output),
+    ];
+    let map = TensorMapValue {
+        array: "out".to_string(),
+        elemtype: TensorElemType::F32,
+        dims: vec![4, 2, 2, 1],
+        strides: vec![16, 32, 64],
+        mode: TensorMapMode::Im2col(volta_ptx_analysis::Im2colBox {
+            lower_corner: vec![0, 0],
+            upper_corner: vec![0, 0],
+            channels_per_pixel: 4,
+            pixels_per_column: 4,
+        }),
+        element_strides: vec![1, 1, 1, 1],
+        interleave: TensorInterleaveLayout::None,
+        swizzle: TensorSwizzleMode::None,
+        swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+        fill: TensorFillMode::Zero,
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: FieldValue::TensorMap(Box::new(map)),
+        },
+        StructField {
+            offset: 128,
+            value: FieldValue::ArrayPtr("in".to_string()),
+        },
+    ])];
+    analyze!("success/tma_im2col_no_offs_store_walks_the_pixel_column", config);
 }
 
 /// Host-encoded tensor maps inside a struct parameter, reached through
@@ -2427,6 +2544,19 @@ fn test_tcgen05_mma_kind_mxf8f6f4_block_scale_numeric_correctness() {
     );
 }
 
+/// A Tensor Memory address's top two bits select the cell's byte: CuTe keeps a scale factor's
+/// byte there (and in idesc's Scale Factor ID), so the same MMA through such addresses gives
+/// the same out = {204, 6528, 408, 13056}.
+#[test]
+fn test_tcgen05_mma_block_scale_addresses_select_the_scale_byte() {
+    let mut config = out_only_config(4, 4);
+    config.block_dim = (128, 1, 1);
+    analyze!(
+        "success/tcgen05_mma_block_scale_addresses_select_the_scale_byte",
+        config
+    );
+}
+
 /// `.kind::mxf8f6f4` scales that are kernel inputs, loaded as packed words like Gluon's:
 /// D[0][0] = 2^(sa[1] - 127) * 2^(sb[2] - 127), each factor Volta's `ex2`.
 #[test]
@@ -2458,6 +2588,23 @@ fn test_tcgen05_cp_scales_feed_block_scaled_mma() {
         .map(|name| ParamValue::ArrayPtr(name.to_string()))
         .to_vec();
     analyze!("success/tcgen05_cp_scales_feed_block_scaled_mma", config);
+}
+
+/// A `tcgen05.cp` over scales an earlier MMA read (CUTLASS's block-scaled refill) is ordered
+/// after it by the thread's `tcgen05.fence::before_thread_sync` (PTX ISA 9.7.16.6.3), though
+/// `tcgen05.mma` -> `tcgen05.cp` is no pipelined pair.
+#[test]
+fn test_tcgen05_fence_before_thread_sync_orders_the_next_copy() {
+    let mut config = AnalysisConfig::new((128, 1, 1));
+    config.arrays = vec![
+        array("sa", 0x10000, 1, 512, ArrayKind::Input),
+        array("sb", 0x11000, 1, 512, ArrayKind::Input),
+        array("out", 0x20000, 4, 1, ArrayKind::Output),
+    ];
+    config.params = ["sa", "sb", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/tcgen05_fence_before_thread_sync_orders_the_next_copy", config);
 }
 
 /// One warp's `mma.sync.m16n8k256.b1.xor.popc` over a 16x8-word A, an 8x8-word B (one row

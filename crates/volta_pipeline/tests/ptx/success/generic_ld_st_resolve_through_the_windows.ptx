@@ -1,0 +1,37 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Spaceless ld/st resolve their address per access: a generic shared or local address (cvta)
+// reaches its space at its offset, and any other address is global. out[0] = in[0] through
+// shared memory, out[1] = in[1] through local memory, out[2] = in[2] read and written generically.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<12>;
+    .shared .align 16 .b8 sdata[16];
+    .local .align 16 .b8 ldata[16];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.global.u64 %rd3, %rd1;
+    cvta.global.u64 %rd4, %rd2;
+    mov.u64 %rd5, sdata;
+    cvta.shared.u64 %rd6, %rd5;
+    mov.u64 %rd7, ldata;
+    cvta.local.u64 %rd8, %rd7;
+    ld.u32 %r1, [%rd3];
+    st.u32 [%rd6], %r1;
+    ld.shared.u32 %r2, [sdata];
+    st.u32 [%rd4], %r2;
+    ld.u32 %r3, [%rd3+4];
+    st.u32 [%rd8], %r3;
+    ld.local.u32 %r4, [ldata];
+    st.u32 [%rd4+4], %r4;
+    ld.u32 %r5, [%rd3+8];
+    st.u32 [%rd4+8], %r5;
+    ret;
+}
