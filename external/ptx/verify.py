@@ -31,7 +31,7 @@ PTX_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PTX_ROOT.parent.parent
 VOLTA = REPO_ROOT / "target" / "release" / "volta"
 SURVEY_DIR = PTX_ROOT / "survey"
-FRAMEWORKS = ("vllm", "TensorRT-LLM", "flash-attention")
+FRAMEWORKS = ("vllm", "TensorRT-LLM", "flash-attention", "FlashMLA")
 DEFAULT_TABLE = PTX_ROOT / "output" / "ptx_table.md"
 MEMCAP = None  # memcap.py, loaded in main
 

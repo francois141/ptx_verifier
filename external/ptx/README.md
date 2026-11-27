@@ -4,6 +4,9 @@ Volta's checks of the PTX frameworks' kernels (`sources/frameworks.txt` pins eac
 
 - `extraction/`: fetch the sources (`just ptx-sources`), compile them to sm_100a PTX in Docker
   (`survey.py`) and extract the Python-DSL frameworks' PTX.
+- `flashinfer/units/`: FlashInfer is header-only (its own `csrc/` units need its JIT's TVM-FFI
+  bindings), so these units instantiate its kernels through the headers' host launchers;
+  `survey.py` copies them into the checkout's `volta_units/` and compiles them (`local_units`).
 - `<framework>/cases.py`: each framework's cases (launch, spec, expected verdict);
   `verify.py` runs them (`python3 external/ptx/verify.py vllm -k rms_norm`) and writes
   `output/ptx_table.md`.
@@ -13,3 +16,6 @@ Volta's checks of the PTX frameworks' kernels (`sources/frameworks.txt` pins eac
   with `--jobs` lowered so that jobs x cap stays within half of physical memory. Run ad-hoc
   Volta or `cargo test` commands under it too:
   `python3 external/ptx/memcap.py --gb 6 -- target/release/volta solve ...`.
+
+Docker runs in Colima's VM (16 GiB). Start it (`colima start`) only when no capped Volta runs are
+using the rest of the machine's memory.
