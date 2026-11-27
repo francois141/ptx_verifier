@@ -1832,13 +1832,11 @@ CASES += (
                      ep=True, note=" (non-local experts skipped)"),
     finalize_routing("finalize_routing_f32_ep_all_remote", 3, 4, 512, cta=0, num_experts=16,
                      dtype="f32", ep=True, seed=8, note=" (no local expert: a zero row)"),
-    # Volta gap: the bf16 / f16 output packs two cvt.rn.bf16.f32 halves with cvt.u32.u16, shl
-    # 16 and or.b32 into one 32-bit word (arrayConvert, .inl:144), which Volta keeps as an
-    # opaque scalar: "output array 'hidden_states' element ... was written at width 4
-    # (element width 2)". Correct on hardware.
-    finalize_routing("finalize_routing_bf16_4096", 6, 2, 4096, cta=4, check="UNKNOWN"),
+    # The bf16 / f16 output packs two cvt.rn.bf16.f32 halves with cvt.u32.u16, shl 16 and
+    # or.b32 into one 32-bit word (arrayConvert, .inl:144), read back as its two halves.
+    finalize_routing("finalize_routing_bf16_4096", 6, 2, 4096, cta=4),
     finalize_routing("finalize_routing_f16_top8_2048", 3, 8, 2048, cta=2, num_experts=16,
-                     dtype="f16", check="UNKNOWN"),
+                     dtype="f16"),
     negative(finalize_routing("finalize_routing_f32_4096", 6, 2, 4096, cta=4, dtype="f32"),
              "spec expects the previous token's row", P=3),
     shuffle_rows("shuffle_rows_bf16_copy", 5, SHUFFLE_MAP, 4096, cta=0),

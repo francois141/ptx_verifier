@@ -9,6 +9,7 @@ the source cited in `source`.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 EPS = 9.999999974752427e-07  # f32(1e-6)
 KERNELS = "cpp/tensorrt_llm/kernels/"
@@ -1066,12 +1067,9 @@ _MERGES = (
 # with merged_softmax_stats == pre_softmax_stats (mlaPreprocessOp.cpp:102) that is a data race
 # under the PTX memory model; the kernel relies on warp-synchronous execution (its static_assert,
 # :41, "readers of aliased softmax stats must stay in the same warp as their writer"). The copy
-# op (OP 2) and separate buffers have no conflict. Volta gap: a bf16 merge's outputs cannot be
-# read back, its two halves packed by `cvt.u32.u16; shl.b32 16; or.b32` (:4436-:4440) into a
-# word stored by `st.global.v4.b32` (:4443): "output array 'ma' element 1016 was written at width
-# 4 (element width 2)" (an element of `ma`), so the separate-buffer bf16 merge is UNKNOWN (true
-# verdict ACCEPT, as f32's).
-_MERGE_VERDICTS = ("REJECT", "ACCEPT", "UNKNOWN", "ACCEPT", "REJECT")
+# op (OP 2) and separate buffers have no conflict. A bf16 merge packs its two halves by
+# `cvt.u32.u16; shl.b32 16; or.b32` (:4436-:4440) into one stored word, read back as its halves.
+_MERGE_VERDICTS = ("REJECT", "ACCEPT", "ACCEPT", "ACCEPT", "REJECT")
 CASES += tuple(hidden(c, v) for c, v in zip(_MERGES, _MERGE_VERDICTS)) + (
     hidden(negative(_MERGES[3], {"OP": 2}, "copy instead of merge"), "REJECT"),
     hidden(negative(_MERGES[1], {"T1": 12}, "one token short"), "REJECT"),)
@@ -1372,8 +1370,28 @@ DSV3 = KERNELS + "dsv3MinLatencyKernels/"
 FUSED_A = DSV3 + "dsv3FusedAGemm.cu"
 
 
-# A unit under this directory: `verify.py` reads `survey/TensorRT-LLM/<unit>.ptx`.
+# A unit under this directory: `verify.py` reads `survey/TensorRT-LLM/<unit>.ptx`. Each patched
+# PTX is a finding's control (the kernel with one diagnosed defect fixed), kept as a diff of the
+# survey's PTX (`patched/<name>.ptx.patch`) and written beside it when this module loads.
 PATCHED = "../../TensorRT-LLM/patched/"
+_PATCH_SOURCES = {"attnResFwd_tmem_fixed": "kimiK3AttnRes/attnResFwd.ptx",
+                  "attnResFwd_tmem_lane": "kimiK3AttnRes/attnResFwd.ptx",
+                  "dsv3FusedAGemm_fixed": "dsv3MinLatencyKernels/dsv3FusedAGemm.ptx",
+                  "dsv3FusedAGemm_shared_arrive": "dsv3MinLatencyKernels/dsv3FusedAGemm.ptx"}
+
+
+def _write_patched():
+    import subprocess
+    here = Path(__file__).resolve().parent
+    survey = here.parent / "survey" / "TensorRT-LLM" / "cpp" / "tensorrt_llm" / "kernels"
+    for name, source in _PATCH_SOURCES.items():
+        out = here / "patched" / f"{name}.ptx"
+        if not out.exists() and (survey / source).exists():
+            subprocess.run(["patch", "-s", "-o", str(out), str(survey / source),
+                            str(here / "patched" / f"{name}.ptx.patch")], check=True)
+
+
+_write_patched()
 
 
 def fused_a_gemm(name, hd_in, hd_out, tile_n, tile_m, tokens, cta, patched=None, check="ACCEPT",
@@ -2252,9 +2270,9 @@ def kv_draft_update(name, accepted, past_lens, heads, head_dim, max_len, cta, la
         block=128,
         check=check,
         spec="kv_draft_update.spec",
-        dims={"NL": layers, "S": slots, "TWO": 2, "H": heads, "ML": max_len, "D": head_dim, "NI": max(1, len(packed)),
-              "LI": li, "SLOT": slot, "HI": hi, "ST": past_lens[slot] - rewind, "CNT": len(accepted[s]),
-              "OFF": offsets[s]},
+        dims={"NL": layers, "S": slots, "TWO": 2, "H": heads, "ML": max_len, "D": head_dim, "LI": li, "SLOT": slot,
+              "HI": hi, "ST": past_lens[slot] - rewind, "CNT": len(accepted[s]),
+              **{f"P{j}": past_lens[slot] - rewind + (list(accepted[s]) + [0] * 4)[j] for j in range(4)}},
         cta=cta,
     )
 
@@ -2268,4 +2286,192 @@ _KV_UPDATES = (
                     dtype="f32", note=" (permuted: destination 5 is source 6, 6 is 5)"),
 )
 CASES += tuple(hidden(c, c.check) for c in _KV_UPDATES) + (
-    hidden(negative(_KV_UPDATES[0], {"ST": 7}, "one token earlier"), "REJECT"),)
+    hidden(negative(_KV_UPDATES[0], {"ST": 7}, "one token earlier"), "REJECT"),
+    # ABORT, a Volta limit, not a kernel bug: maxEltCountPerMove divides by seqDraftCount (:52) before
+    # the seqDraftCount == 0 return (:54), "unsupported at pc:34: division by zero (thread t0)". PTX ISA
+    # integer div (isa.txt:4212): division by zero "yields an unspecified, machine-specific value",
+    # and the value is unused, so the kernel is fine. (Noticed while reading: an uncounted lead.)
+    hidden(dataclasses.replace(kv_draft_update("kv_draft_update_none_accepted", ((0, 1), ()), (6, 5), 1, 64, 8,
+                                               cta=(1, 0, 0), note=" (sequence 1 accepted none: writes nothing)"),
+                               spec=None, dims={}), "ABORT"),)
+
+
+# ===== DeepSeek-V4 KV compressor, decode (compressorKernels/compressorKernels.cu) =====
+
+COMPRESSOR = KERNELS + "compressorKernels/compressorKernels.cu"
+
+
+def paged_kv_compress(name, kv_lens, next_n, page_size, tables, cta, hd=128, check="ACCEPT", note=""):
+    """`pagedKvCompressLaunch(kv_score, ape, paged_kv, paged_score, bt_kv, bt_score, out, kv_lens, cu_seq_lens,
+    cu_kv_comp, batch, page_size, max_blocks, hd, CR 2, next_n, 4, 4, 4, nullptr)` (compressorKernels.cu:727):
+    fp32 everywhere, VEC 4, one 32-thread warp per batch (grid (batch, 1, 1)). `tables[b]` = (kv pages,
+    score pages) per logical block. cu_seq_lens = b x next_n, cu_kv_comp = the compressions before b."""
+    cr = 2
+    batch = len(kv_lens)
+    b = cta
+    sp = [k - next_n for k in kv_lens]
+    ncomp = [(sp[i] + next_n) // cr - sp[i] // cr for i in range(batch)]
+    cu_comp = [sum(ncomp[:i]) for i in range(batch)]
+    max_blocks = max(len(t[0]) for t in tables)
+    n_pages = 1 + max(max(max(kv), max(sc)) for kv, sc in tables)
+    bt_kv = sum((list(kv) + [0] * (max_blocks - len(kv)) for kv, _ in tables), [])
+    bt_sc = sum((list(sc) + [0] * (max_blocks - len(sc)) for _, sc in tables), [])
+    dims = {"NT": batch * next_n, "SD2": 2 * hd, "SD": hd, "NP": n_pages, "PS": page_size, "NO": max(1, sum(ncomp)),
+            "CR": cr, "NW": next_n, "NC": ncomp[b], "OUT": cu_comp[b]}
+    for u in range(2):
+        tok = sp[b] + u
+        valid = u < next_n
+        dims.update({f"WT{u}": b * next_n + u if valid else 0,
+                     f"WK{u}": tables[b][0][tok // page_size] if valid else 0,
+                     f"WQ{u}": tables[b][1][tok // page_size] if valid else 0,
+                     f"WO{u}": tok % page_size if valid else 0, f"WA{u}": tok % cr if valid else 0})
+    start = (sp[b] // cr) * cr
+    for r in range(2):
+        pos = start + r
+        new = pos >= sp[b]
+        dims.update({f"N{r}": int(new), f"T{r}": b * next_n + pos - sp[b] if new else 0,
+                     f"K{r}": tables[b][0][pos // page_size], f"Q{r}": tables[b][1][pos // page_size],
+                     f"O{r}": pos % page_size})
+    return Case(
+        name=name,
+        description=f"pagedKvCompressKernel<{hd}, f32, f32, CR 2, 1 warp>, kv lengths {kv_lens}, next_n {next_n}, "
+                    f"page size {page_size}, block tables {tables}, block {cta}: {ncomp[b]} compression(s){note}",
+        source=f"{COMPRESSOR}:304 (pagedKvCompressKernel), host pagedKvCompressLaunch :727",
+        unit=COMPRESSOR,
+        symbol=f"21pagedKvCompressKernelILi{hd}ELi4ELi4ELi2ELi1ELb0EE",
+        args=(Ptr("kvs"), Ptr("ape"), Ptr("pkv"), Ptr("psc"), Ptr("bt_kv"), Ptr("bt_sc"), Ptr("out"), Ptr("kv_lens"),
+              Ptr("cu_seq"), Ptr("cu_comp"), Int(next_n, "next_n"), Int(page_size, "page_size"),
+              Int(max_blocks, "max_blocks"), Int(4, "out_elem_bytes"), NULL),
+        arrays=(Array("bt_kv", "index", "i32", (batch, max_blocks), contents=tuple(bt_kv)),
+                Array("bt_sc", "index", "i32", (batch, max_blocks), contents=tuple(bt_sc)),
+                Array("kv_lens", "index", "i32", (batch,), contents=tuple(kv_lens)),
+                Array("cu_seq", "index", "i32", (batch,), contents=tuple(b2 * next_n for b2 in range(batch))),
+                Array("cu_comp", "index", "i32", (batch,), contents=tuple(cu_comp)),
+                Array("kvs", "in", "f32", (batch * next_n, 2 * hd)), Array("ape", "in", "f32", (cr, hd)),
+                Array("pkv", "inout", "f32", (n_pages, page_size, hd)),
+                Array("psc", "inout", "f32", (n_pages, page_size, hd)),
+                Array("out", "out", "f32", (max(1, sum(ncomp)), hd))),
+        grid=(batch, 1, 1),
+        block=32,
+        check=check,
+        spec="paged_kv_compress_cr2.spec",
+        dims=dims,
+        cta=(cta, 0, 0),
+    )
+
+
+# Volta gap (UNKNOWN, true verdict ACCEPT expected; the graph checks pass): a compression's output
+# is the online softmax of decodeSoftmaxVec (:290), nm = fmaxf(rmax, s), rescales expf(rmax - nm)
+# and expf(s - nm) through the accurate expf (`fma.rm.f32; shl.b32 23; ex2.approx.ftz.f32`), which
+# the canonicalizer neither proves nor refutes against the max-shifted softmax ("not proved
+# equivalent and not refuted", every out element); the paged-state writes in the same runs prove.
+_COMPRESS = (
+    paged_kv_compress("paged_kv_compress_cr2_decode", (8, 5), 1, 4, (((3, 1), (2, 0)), ((4, 5), (6, 7))), cta=0,
+                      check="UNKNOWN", note=" (old position 6 + new 7)"),
+    paged_kv_compress("paged_kv_compress_cr2_decode_partial", (8, 5), 1, 4, (((3, 1), (2, 0)), ((4, 5), (6, 7))),
+                      cta=1, note=" (token 4 opens a chunk: no compression)"),
+    paged_kv_compress("paged_kv_compress_cr2_mtp_page_cross", (6,), 2, 2, (((1, 0, 2), (3, 4, 5)),), cta=0,
+                      check="UNKNOWN", note=" (tokens 4, 5 on page 2)"),
+)
+CASES += _COMPRESS + (negative(_COMPRESS[1], {"WA0": 1}, "ape row 1"),)
+
+
+# ===== Kimi K3 attention residual, N = 1 (kimiK3AttnRes/attnResFwd.cu) =====
+
+ATTN_RES = KERNELS + "kimiK3AttnRes/attnResFwd.cu"
+B200_SMS = 148
+
+
+def attn_res_n1(name, tokens, hidden, cta, patched=None, check="ACCEPT", note=""):
+    """`invokeAttnResFwd` (attnResFwd.cu:1769) with N = 1: `launch_n1_ttile<H, TB_TILE>` (H 8192: tile 2,
+    4096: tile 4; :1797, :1863, launch :1714): grid 2 x SMs, block 288 (1 producer + 8 consumer warps),
+    smem 2 x TB_TILE x H bf16 + FwdSmemPlan<1> (224 bytes). Block b's tiles start at rows b x TB_TILE +
+    k x grid x TB_TILE; the two-slot ring (CHUNK_DEPTH 2) holds two of them."""
+    tile = {8192: 2, 4096: 4}[hidden]
+    grid = 2 * B200_SMS
+    smem = (2 * tile * hidden * 2 + 224 + 15) & ~15
+    tiles = [(r, min(tokens, r + tile)) for r in range(cta * tile, tokens, grid * tile)]
+    assert len(tiles) <= 3
+    (r0, r1), (r2, r3), (r4, r5) = (tiles + [(0, 0)] * 3)[:3]
+    return Case(
+        name=name,
+        description=f"attn_res_fwd_n1_ttile_kernel<{hidden}, {tile}>, {tokens} tokens, grid {grid}, block {cta}: "
+                    f"tiles {tiles}{note}{HIDDEN}",
+        source=f"{ATTN_RES}:819 (attn_res_fwd_n1_ttile_kernel), host launch_n1_ttile :1714 from invokeAttnResFwd :1769"
+               + (f", PTX patched ({PATCHED}attnResFwd_{patched}.ptx)" if patched else ""),
+        unit=f"{PATCHED}attnResFwd_{patched}.cu" if patched else ATTN_RES,
+        symbol=f"28attn_res_fwd_n1_ttile_kernelILi{hidden}ELi{tile}ELb1EE",
+        args=(Ptr("layer"), Ptr("res_w"), Ptr("rms_w"), Ptr("output"), Ptr("rsigma"), Ptr("probs"), Ptr("logits"),
+              Int(tokens, "T"), Int(1, "B"), Float(EPS, "rms_eps")),
+        arrays=(Array("layer", "in", "bf16", (tokens, hidden)), Array("res_w", "in", "bf16", (hidden,)),
+                Array("rms_w", "in", "bf16", (hidden,)), Array("output", "out", "bf16", (tokens, hidden)),
+                Array("rsigma", "out", "f32", (tokens,)), Array("probs", "out", "f32", (tokens,)),
+                Array("logits", "out", "f32", (tokens,))),
+        grid=(grid, 1, 1),
+        block=288,
+        check=check,
+        spec="attn_res_n1.spec",
+        dims={"TB": tokens, "H": hidden, "R0": r0, "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5},
+        cta=(cta, 0, 0),
+        smem=smem,
+    )
+
+
+# Volta finding (UNKNOWN: the run stops): every consumer warp's TMEM address is tmem_base plus a
+# column offset (my_tmem, :870; `add.s32 %r547, %r97, %r98`, attnResFwd.ptx:46935), lane 0, so warp 1
+# stores rows of lanes 0-31: "t32: tcgen05.ld/.st at pc:146 addresses tensor-memory lane quadrant 0 -
+# the issuing warp may only access its own quadrant, starting at lane 32". PTX ISA 9.7.16.8.1: warp w
+# of a warpgroup accesses lanes 32 (w % 4) .. + 31 only; the kernel is correct only if the hardware
+# substitutes the warp's quadrant for the address's lane field. `_tmem_lane` adds ((warpid % 4) 32)
+# << 16 to the address; then Volta finds (REJECT, resource lifetime) that no tcgen05.ld is ordered
+# before the tcgen05.dealloc (:1002): "UseNotBeforeDeallocation: async op 17 line 47256
+# `tcgen05.ld.sync.aligned.32x32b.x8.b32 {%r118, ...}, [%r547]` / t32 line 48156 `tcgen05.dealloc`",
+# the kernel having no tcgen05.wait::ld and no tcgen05.fence::before/after_thread_sync around its last
+# __syncthreads (:998; ISA 9.7.16.6.4.5: only register dependencies are ordered without wait::ld).
+# `_tmem_fixed` adds both: ACCEPT.
+_ATTN_RES = (
+    attn_res_n1("attn_res_n1_4096_3tok", 3, 4096, cta=0, check="UNKNOWN", note=" (one partial tile, 3 of 4 rows)"),
+    attn_res_n1("attn_res_n1_4096_3tok_tmem_lane", 3, 4096, cta=0, patched="tmem_lane", check="REJECT",
+                note=" (one partial tile, 3 of 4 rows)"),
+    attn_res_n1("attn_res_n1_4096_3tok_tmem_fixed", 3, 4096, cta=0, patched="tmem_fixed",
+                note=" (one partial tile, 3 of 4 rows)"),
+    attn_res_n1("attn_res_n1_4096_2tiles_tmem_fixed", 1187, 4096, cta=0, patched="tmem_fixed",
+                note=" (both ring slots: rows 0..4 and 1184..1187)"),
+    # A third tile (the ring's wrap: 2369 tokens, rows 0, 1184 and 2368 for block 0 of the 296-block grid)
+    # is MEMORY at 3 GB (a 2369 x 4096 output), so the wrap is not covered here.
+)
+CASES += (negative(_ATTN_RES[2], {"R1": 2}, "2 rows"),)
+CASES += _ATTN_RES
+
+
+def attn_res_online(name, n, tokens, hidden, nc, cta, release=True, check="VERIFIED", note=""):
+    """`launch_fwd<H, NC, RELEASE_TMEM>` (attnResFwd.cu:1011) from invokeAttnResFwd (:1868 for H 4096, N <= 4):
+    grid 2 x SMs (RELEASE_TMEM) else SMs, block 288, smem 2 x NC x H bf16 + FwdSmemPlan<NC>
+    (32 + 128 NC + 48 + 4, to 16). Race check only (the N-way online softmax)."""
+    plan = (32 + 128 * nc + 48 + 4 + 15) & ~15
+    smem = (2 * nc * hidden * 2 + plan + 15) & ~15
+    return Case(
+        name=name,
+        description=f"attn_res_fwd_online_v2_kernel<{hidden}, NC {nc}, release {release}>, N {n}, {tokens} tokens, "
+                    f"block {cta}{note}{HIDDEN}",
+        source=f"{ATTN_RES}:238 (attn_res_fwd_online_v2_kernel), host launch_fwd :1011 from invokeAttnResFwd :1868",
+        unit=ATTN_RES,
+        symbol=f"29attn_res_fwd_online_v2_kernelILi{hidden}ELi{nc}ELb{int(release)}ELb0EE",
+        args=(Ptr("block"), Ptr("layer"), Ptr("res_w"), Ptr("rms_w"), Ptr("output"), Ptr("rsigma"), Ptr("probs"),
+              Ptr("logits"), Int(n, "N"), Int(tokens, "T"), Int(1, "B"), Float(EPS, "rms_eps")),
+        arrays=(Array("block", "in", "bf16", (n - 1, tokens, hidden)), Array("layer", "in", "bf16", (tokens, hidden)),
+                Array("res_w", "in", "bf16", (hidden,)), Array("rms_w", "in", "bf16", (hidden,)),
+                Array("output", "out", "bf16", (tokens, hidden)), Array("rsigma", "out", "f32", (n, tokens)),
+                Array("probs", "out", "f32", (n, tokens)), Array("logits", "out", "f32", (n, tokens))),
+        grid=(2 * B200_SMS if release else B200_SMS, 1, 1),
+        block=288,
+        check=check,
+        cta=(cta, 0, 0),
+        smem=smem,
+    )
+
+
+# ABORT, the n1_ttile kernel's TMEM finding in the N > 1 kernel too (my_v_tmem = tmem_base + group
+# x TMEM_V_COLS_PER_GROUP, :301): "t32: tcgen05.ld/.st at pc:249 addresses tensor-memory lane quadrant 0 - the issuing warp
+# may only access its own quadrant, starting at lane 32".
+CASES += (attn_res_online("attn_res_online_4096_n3", 3, 2, 4096, 2, cta=0, check="ABORT"),)
