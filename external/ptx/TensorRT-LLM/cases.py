@@ -2475,3 +2475,814 @@ def attn_res_online(name, n, tokens, hidden, nc, cta, release=True, check="VERIF
 # x TMEM_V_COLS_PER_GROUP, :301): "t32: tcgen05.ld/.st at pc:249 addresses tensor-memory lane quadrant 0 - the issuing warp
 # may only access its own quadrant, starting at lane 32".
 CASES += (attn_res_online("attn_res_online_4096_n3", 3, 2, 4096, 2, cta=0, check="ABORT"),)
+
+
+# ===== Round 4 =====
+# ===== Kimi K3 attention residual, persistent fused (kimiK3AttnRes/attnResFwdPersistentFused.cu) =====
+
+ATTN_RES_PF = KERNELS + "kimiK3AttnRes/attnResFwdPersistentFused.cu"
+PF_H = 7168
+_PATCH_SOURCES["attnResFwdPersistentFused_tmem_lane"] = "kimiK3AttnRes/attnResFwdPersistentFused.ptx"
+_write_patched()
+
+
+def attn_res_pf_smem(delta):
+    """launch_fwd's smem (:1050): CHUNK_DEPTH (NC + delta) H bf16 + H bf16 (OUTPUT_NORM_IN_SMEM) +
+    sizeof(FwdSmemPlan<3>) (bar_ready 16, bar_consumed 16, bar_output_norm_ready 16, ws_stats 8 x 3
+    float2, tmem_base: 256), to 16."""
+    return (2 * (3 + int(delta)) * PF_H * 2 + PF_H * 2 + 256 + 15) & ~15
+
+
+def attn_res_pf(name, n, tokens, cta, delta=False, patched=None, dims=None, check="ACCEPT", note=""):
+    """`invokeAttnResPersistentFusedFwd(params, smReserve 0)` (attnResFwdPersistentFused.cu:1104) from
+    attn_res_add_rmsnorm_persistent_fwd (thop/attnResOp.cpp:356): H 7168, B 1, NC 3, RELEASE_TMEM false,
+    HAS_OUTPUT_NORM, OUTPUT_NORM_IN_SMEM; `launch_fwd` (:1045) grid num_sm (148), block 288, block strides
+    (7168, T x 7168) (:1155). Block `cta` handles tokens cta, cta + 148, ..."""
+    grid = B200_SMS
+    unit = f"{PATCHED}attnResFwdPersistentFused_{patched}.cu" if patched else ATTN_RES_PF
+    toks = list(range(cta, tokens, grid))
+    assert len(toks) <= 2
+    return Case(
+        name=name,
+        description=f"attn_res_fwd_persistent_fused_kernel<7168, N {n}, NC 3, delta {delta}>, {tokens} tokens, "
+                    f"grid {grid}, block {cta}: tokens {toks}{note}{HIDDEN}",
+        source=f"{ATTN_RES_PF}:315 (attn_res_fwd_persistent_fused_kernel), host launch_fwd :1045 from "
+               f"invokeAttnResPersistentFusedFwd :1104, thop/attnResOp.cpp:356"
+               + (f", PTX patched ({PATCHED}attnResFwdPersistentFused_{patched}.ptx)" if patched else ""),
+        unit=unit,
+        symbol=f"36attn_res_fwd_persistent_fused_kernelILi7168ELi{n}ELi3ELi1ELb0ELb{int(delta)}ELb1ELb1EE",
+        args=(Ptr("block"), Ptr("layer"), Ptr("updated") if delta else NULL, Ptr("delta") if delta else NULL,
+              Ptr("res_w"), Ptr("rms_w"), Ptr("output"), Int(tokens, "T"), Int(PF_H, "block_stride_m"),
+              Int(tokens * PF_H, "block_stride_r"), Float(EPS, "rms_eps"), Ptr("norm_w"), Float(EPS, "output_norm_eps")),
+        arrays=(Array("block", "in", "bf16", (n - 1, tokens, PF_H)), Array("layer", "in", "bf16", (tokens, PF_H)),
+                *((Array("delta", "in", "bf16", (tokens, PF_H)), Array("updated", "out", "bf16", (tokens, PF_H)))
+                  if delta else ()),
+                Array("res_w", "in", "bf16", (PF_H,)), Array("rms_w", "in", "bf16", (PF_H,)),
+                Array("norm_w", "in", "bf16", (PF_H,)), Array("output", "out", "bf16", (tokens, PF_H))),
+        grid=(grid, 1, 1),
+        block=288,
+        check=check,
+        spec="attn_res_pf_delta.spec" if delta else None,
+        dims={"N": n, "NM1": n - 1, "T": tokens, "H": PF_H, "P0": toks[0], "P1": toks[-1], **(dims or {})} if delta else {},
+        cta=(cta, 0, 0),
+        smem=attn_res_pf_smem(delta),
+    )
+
+
+# Volta finding (the attnResFwd TMEM lane-quadrant defect, in the persistent fused port): every consumer
+# warp's TMEM address is tmem_base + group x 96 columns, lane field 0 (my_v_tmem, :407; PTX `selp.b32 %r167,
+# 96, 0, %p6; add.s32 %r5, %r166, %r167`), so warps 1-3 and 5-7 tcgen05.st/ld lanes 0-31: "t32:
+# tcgen05.ld/.st at pc:425 addresses tensor-memory lane quadrant 0 - the issuing warp may only access its own
+# quadrant, starting at lane 32" (PTX ISA 9.7.16.8.1: warp w of a warpgroup reaches lanes 32 (w % 4) .. + 31
+# only). ABORT without a spec, UNKNOWN with one. `_tmem_lane` adds ((warpid % 4) 32) << 16 to the address in
+# all 16 instantiations; then the graph checks pass (this port waits tcgen05.wait::ld before reusing the
+# columns, :217, the defect attnResFwd.cu's dealloc showed) and `updated` is proved. The mixed, normalized
+# `output` is not checked: against a spec stating it (logits, max-shifted softmax, fused RMSNorm) the
+# solver stops, even sampling 4 elements, "VC too large: exceeded 4000000000 term operations" (UNKNOWN).
+_ATTN_RES_PF = (
+    attn_res_pf("attn_res_pf_n2_1tok", 2, 1, cta=0, check="ABORT"),
+    attn_res_pf("attn_res_pf_n2_1tok_tmem_lane", 2, 1, cta=0, patched="tmem_lane", check="VERIFIED"),
+    attn_res_pf("attn_res_pf_n4_delta_tmem_lane", 4, 1, cta=0, delta=True, patched="tmem_lane",
+                note=" (2 chunks: 3 + 1 sources, both ring slots)"),
+    attn_res_pf("attn_res_pf_n9_delta_2tok_tmem_lane", 9, 149, cta=0, delta=True, patched="tmem_lane",
+                note=" (3 chunks a token, 6 in all: the ring wraps)"),
+    attn_res_pf("attn_res_pf_n7_delta_last_tmem_lane", 7, 150, cta=1, delta=True, patched="tmem_lane",
+                note=" (3 + 3 + 1 sources; block 1's second token is the last)"),
+    attn_res_pf("attn_res_pf_n7_delta_unpatched", 7, 150, cta=1, delta=True, check="UNKNOWN"),
+)
+CASES += _ATTN_RES_PF
+CASES += (negative(_ATTN_RES_PF[3], {"P1": 0}, "token 148 unwritten"),)
+
+
+# ===== KDA (Kimi Delta Attention) decode step, legacy kernels (kdaDecode/kdaDecodeLegacy.cu) =====
+
+KDA = KERNELS + "kdaDecode/kdaDecodeLegacy.cu"
+KDA_OPT = KERNELS + "kdaDecode/kdaDecodeOptimized.cu"
+KDA_KERNEL = {0: "kda_decode_native_kernel<kSingleCtaCpAsync>", 1: "kda_decode_native_kernel<kSingleCtaTwoStageCpAsyncBulk>",
+              3: "kda_decode_native_kernel<kFourCtaThreadBlockClusterCpAsync>"}
+KDA_CONV = 0x70000000  # the packed [slots, 3 D, 3] conv-state pool cs_q, cs_k, cs_v are sections of
+KDA_LB, KDA_SCALE, KDA_OEPS = -5.0, 0.088388346135616302490234375, 9.99999974737875163555145263671875e-06
+
+
+def kda_decode(name, batch, heads, cta, many=False, schedule=None, update=True, slots=None, check="ACCEPT", note=""):
+    """`kda_decode(..., apply_onorm, update_conv_cache, use_lower_bound, apply_beta_sigmoid, lower_bound -5,
+    scale 128^-0.5, onorm_eps 1e-5)` (thop/kdaDecodeOp.cpp:219; the op requires the three flags, :58) with H == HV,
+    contiguous inputs: invokeKdaDecode (kdaDecodeDispatcher.cpp:101) on SM100 picks the legacy compact-heads kernel
+    for B H in 33..144 and the many-heads one for 672..720 (:44); `launch_kda_decode_{compact,many}_heads_raw`
+    (kdaDecodeLegacy.cu:1424, :1445): block 256, compact grid B HV with 3 x 32 x 128 floats of smem, many grid
+    (B, HV) without ssm_state_indices else B HV. `slots` are ssm_state_indices (none: slot = batch row). With
+    `update`, cs_q/k/v are the q, k, v sections of one packed [slots, 3 D, 3] pool (:161, stride 3 D 3), else
+    batch-local contiguous [B, D, 3]. Block `cta` = (batch row, head)."""
+    n, hi = cta
+    d = heads * 128
+    static = slots is None
+    s = batch if static else max(slots) + 1
+    slot = n if static else slots[n]
+    hv = heads
+    if schedule is not None:
+        symbol = f"24kda_decode_native_kernelILNS3_14KernelScheduleE{schedule}ELi{heads}ELb{int(update)}EE"
+        cluster = schedule == 3
+        grid = (4, batch, hv) if cluster else (batch, hv, 1)
+        block_cta = (0, n, hi) if cluster else (n, hi, 0)
+        smem = {1: 2, 2: 4}.get(schedule, 0) * 32 * 128 * 4
+    elif many:
+        symbol = (f"35kda_decode_fusion_many_heads_kernelILb1ELb{int(static)}ELi{heads}ELi{heads}ELb{int(static)}ELb0ELb0"
+                  f"ELb0ELb0ELb0ELb1ELb1ELb1ELb{int(update)}ELb1ELb1EE")
+        grid, block_cta = ((batch, hv, 1), (n, hi, 0)) if static else ((batch * hv, 1, 1), (n * hv + hi, 0, 0))
+        smem = 0
+    else:
+        symbol = (f"38kda_decode_fusion_compact_heads_kernelILb1ELb1ELb{int(static)}ELi{heads}ELi{heads}ELb0ELb0ELb0"
+                  f"ELb1ELb0ELb1ELb{int(update)}ELb1ELb1EE")
+        grid, block_cta = (batch * hv, 1, 1), (n * hv + hi, 0, 0)
+        smem = 3 * 32 * 128 * 4
+    if update:
+        conv = [Array("conv", "inout", "bf16", (s, 3 * d, 3), base=KDA_CONV)]
+        cs = (Int(KDA_CONV, "cs_q"), Int(KDA_CONV + d * 3 * 2, "cs_k"), Int(KDA_CONV + 2 * d * 3 * 2, "cs_v"))
+        conv_stride = 3 * d * 3
+    else:
+        conv = [Array(c, "in", "bf16", (batch, d, 3)) for c in ("cs_q", "cs_k", "cs_v")]
+        cs = (Ptr("cs_q"), Ptr("cs_k"), Ptr("cs_v"))
+        conv_stride = d * 3
+    row = heads * 128
+    layout = Struct(tuple({"offset": 8 * i, "u64": v} for i, v in enumerate((row, row, row, row, hv, row))), "layout")
+    dims = {"B": batch, "K": 128, "W": 4, "C": 3, "H": heads, "D": d, "S": s, "N": n, "HI": hi, "HK0": hi * 128, "SLOT": slot}
+    if update:
+        dims["D3"] = 3 * d
+    return Case(
+        name=name,
+        description=f"{KDA_KERNEL[schedule] if schedule is not None else 'kda_decode_fusion_' + ('many' if many else 'compact') + '_heads_kernel'}, B {batch}, H = HV {heads}, "
+                    f"{'conv-state update (packed pool)' if update else 'batch-local conv state'}, "
+                    f"{'slots ' + str(slots) if slots else 'slot = batch row'}, block (row {n}, head {hi}){note}"
+                    f"{HIDDEN}",
+        source=(f"{KDA_OPT}:240 (kda_decode_native_kernel), host launchKernelSchedule :656 from "
+                f"launchKdaDecodeOptimized* :767" if schedule is not None else
+                f"{KDA}:{903 if many else 371} (kda_decode_fusion_{'many' if many else 'compact'}_heads_kernel), host "
+                f"launch_kda_decode_{'many' if many else 'compact'}_heads_raw :{1445 if many else 1424}")
+               + " from invokeKdaDecode kdaDecodeDispatcher.cpp:101, thop/kdaDecodeOp.cpp:188",
+        unit=KDA_OPT if schedule is not None else KDA,
+        symbol=symbol,
+        args=(Ptr("x_q"), Ptr("x_k"), Ptr("x_v"), Ptr("w_q"), Ptr("w_k"), Ptr("w_v"), Ptr("bias_q"), Ptr("bias_k"),
+              Ptr("bias_v"), *cs, Ptr("a_log"), Ptr("g"), Ptr("dt_bias"), Ptr("beta"), Ptr("onorm_g"),
+              Ptr("onorm_w"), NULL if static else Ptr("slots"), Ptr("state"), Int(hv * 128 * 128, "state_slot_stride"),
+              Int(conv_stride, "conv_state_slot_stride"), Ptr("out"),
+              *((Int(batch, "B"), Int(heads, "H"), Int(hv, "HV")) if schedule is None else ()),
+              Float(KDA_LB, "lower_bound"), Float(KDA_SCALE, "scale"), Float(KDA_OEPS, "onorm_eps"), layout),
+        arrays=(*((Array("slots", "index", "i32", (batch,), contents=tuple(slots)),) if slots else ()),
+                Array("x_q", "in", "bf16", (batch, heads, 128)), Array("x_k", "in", "bf16", (batch, heads, 128)),
+                Array("x_v", "in", "bf16", (batch, hv, 128)),
+                *(Array(w, "in", "bf16", (4, d)) for w in ("w_q", "w_k", "w_v")),
+                *(Array(b, "in", "bf16", (d,)) for b in ("bias_q", "bias_k", "bias_v")),
+                *conv,
+                Array("a_log", "in", "f32", (heads,)), Array("g", "in", "bf16", (batch, hv, 128)),
+                Array("dt_bias", "in", "f32", (d,)), Array("beta", "in", "bf16", (batch, hv)),
+                Array("onorm_g", "in", "bf16", (batch, hv, 128)), Array("onorm_w", "in", "f32", (128,)),
+                Array("state", "inout", "f32", (s, hv, 128, 128)), Array("out", "out", "bf16", (batch, hv, 128))),
+        grid=grid,
+        block=256,
+        check=check,
+        spec="kda_decode_conv_update.spec" if update else None,
+        dims=dims if update else {},
+        cta=block_cta,
+        smem=smem,
+    )
+
+
+# Only `conv` is stated (kda_decode_conv_update.spec): `state` and `out` are race-checked only (see the spec).
+_KDA = (
+    kda_decode("kda_decode_compact_h32_b2_slots", 2, 32, cta=(1, 7), slots=(5, 2)),
+    kda_decode("kda_decode_compact_h32_b2_last", 2, 32, cta=(1, 31), note=" (the last block)"),
+    kda_decode("kda_decode_compact_h8_b18_local", 18, 8, cta=(17, 3), update=False, check="VERIFIED",
+               note=" (B H = 144, the compact bound)"),
+    kda_decode("kda_decode_compact_h3_b12_slots", 12, 3, cta=(11, 2), slots=tuple(range(20, 8, -1)),
+               note=" (3 heads)"),
+    kda_decode("kda_decode_many_h32_b21", 21, 32, cta=(20, 31), many=True, note=" (B H = 672, (B, HV) grid)"),
+    kda_decode("kda_decode_many_h96_b7_slots", 7, 96, cta=(3, 95), many=True, slots=(0, 9, 4, 1, 7, 2, 3),
+               note=" (B H = 672, flat grid)"),
+    kda_decode("kda_decode_many_h48_b15_local", 15, 48, cta=(14, 0), many=True, update=False, check="VERIFIED",
+               note=" (B H = 720)"),
+)
+CASES += tuple(hidden(c, c.check) for c in _KDA) + (negative(_KDA[0], {"SLOT": 1}, "slot 1"),)
+
+# The optimized kernels (kdaDecodeOptimized.cu), which invokeKdaDecode picks on SM100 for every other B H
+# (kdaDecodeDispatcher.cpp:44): the single-CTA cp.async one for 624..865 (but 672..720) and 1368..2496,
+# the two-stage cp.async.bulk one for the rest above 144, the four-CTA cluster one up to 32. grid (B, H),
+# the cluster's (4, B, H) with cluster dims (4, 1, 1) (:682).
+_KDA_OPT = (
+    kda_decode("kda_decode_native_single_h32_b20_slots", 20, 32, cta=(19, 31), schedule=0,
+               slots=tuple(range(39, 19, -1)), note=" (B H = 640)"),
+    kda_decode("kda_decode_native_single_h48_b13_local", 13, 48, cta=(12, 47), schedule=0, update=False,
+               check="VERIFIED", note=" (B H = 624)"),
+    kda_decode("kda_decode_native_single_h96_b9", 9, 96, cta=(8, 50), schedule=0, note=" (B H = 864)"),
+    # Volta gaps (lowering): the two-stage bulk kernel's cuda::barrier wait is the token form
+    # `mbarrier.try_wait.shared::cta.b64 P_OUT, [%r229], %rd100;` (kdaDecodeOptimized.ptx:38006; "non-.parity form
+    # (opaque state-token tracking not modeled)"); the cluster kernel reads its peers' shared memory,
+    # `ld.shared::cluster.b32 %r390, [%r389];` (:115022), and Volta runs one-CTA clusters.
+    kda_decode("kda_decode_native_twostage_h32_b8", 8, 32, cta=(7, 31), schedule=1, check="ERROR",
+               note=" (B H = 256)"),
+    kda_decode("kda_decode_native_cluster_h32_b1", 1, 32, cta=(0, 31), schedule=3, check="ERROR",
+               note=" (B H = 32)"),
+)
+CASES += tuple(hidden(c, c.check) for c in _KDA_OPT) + (negative(_KDA_OPT[0], {"HI": 30}, "head 30"),)
+
+
+# ===== DeepSeek-V4 manifold hyper-connections (mhcKernels/mhcKernels.cu) =====
+
+MHC = KERNELS + "mhcKernels/mhcKernels.cu"
+MHC_PY = "tensorrt_llm/_torch/modules/mhc/mhc_cuda.py"
+
+
+def mhc_gemm_sqrsum(name, m, n, hidden, cta, check="ACCEPT", note=""):
+    """`mhc_gemm_rms_fma_cuda(x [M, K], w_t [N, K], M, N, K, tile_n 0)` (mhc_cuda.py:194, op mhcOp.cpp:84) with K = 4
+    hidden: N = 24 for the pre-mapping mixes (hyper_connection.py:483), 4 for the HC head (mhc_cuda.py:1609);
+    `mhcGemmSqrsumFmaLaunch` (mhcKernels.cu:1080) picks TN by selectFmaTileN (:957: N <= 4: 1 up to M 128 else 2;
+    else 1 up to M 32 else 8), grid (M, N / TN), block 256. Block `cta` = (row, column tile)."""
+    tn = (1 if m <= 128 else 2) if n <= 4 else (1 if m <= 32 else 8)
+    k = 4 * hidden
+    row, nb = cta
+    return Case(
+        name=name,
+        description=f"mhcGemmSqrsumFmaKernel<{tn}>, M {m}, N {n}, K {k}, block (row {row}, columns "
+                    f"{nb * tn}..{nb * tn + tn}){note}",
+        source=f"{MHC}:580 (mhcGemmSqrsumFmaKernel), host mhcGemmSqrsumFmaLaunch :1080 from {MHC_PY}:194",
+        unit=MHC,
+        symbol=f"22mhcGemmSqrsumFmaKernelILi{tn}EE",
+        args=(Ptr("x"), Ptr("w"), Ptr("y"), Ptr("r"), Int(m, "M"), Int(n, "N"), Int(k, "K")),
+        arrays=(Array("x", "in", "bf16", (m, k)), Array("w", "in", "f32", (n, k)), Array("y", "out", "f32", (m, n)),
+                Array("r", "out", "f32", (m,))),
+        grid=(m, n // tn, 1),
+        block=256,
+        check=check,
+        spec="mhc_gemm_sqrsum.spec",
+        dims={"M": m, "N": n, "K": k, "ROW": row, "N0": nb * tn, "N1": nb * tn + tn, "SQ": int(nb == 0)},
+        cta=(row, nb, 0),
+    )
+
+
+def mhc_post_mapping(name, b, hidden, cta, check="ACCEPT", note=""):
+    """`mhc_post_mapping_cuda(residual [B, 4, hidden], x [B, hidden], post [B, 4], comb [B, 4, 4], 4)` (mhc_cuda.py:586,
+    from hyper_connection.py:1159): `mhcPostMappingLaunch` (mhcKernels.cu:1119) grid B, block 256."""
+    return Case(
+        name=name,
+        description=f"mhcPostMappingKernel, {b} tokens of 4 x {hidden}, block {cta}{note}",
+        source=f"{MHC}:773 (mhcPostMappingKernel), host mhcPostMappingLaunch :1119 from {MHC_PY}:586",
+        unit=MHC,
+        symbol="20mhcPostMappingKernel",
+        args=(Ptr("residual"), Ptr("x"), Ptr("post"), Ptr("comb"), Ptr("out"), Int(hidden, "hidden_size")),
+        arrays=(Array("residual", "in", "bf16", (b, 4, hidden)), Array("x", "in", "bf16", (b, hidden)),
+                Array("post", "in", "f32", (b, 4)), Array("comb", "in", "f32", (b, 4, 4)),
+                Array("out", "out", "bf16", (b, 4, hidden))),
+        grid=(b, 1, 1),
+        block=256,
+        check=check,
+        spec="mhc_post_mapping.spec",
+        dims={"B": b, "J": 4, "HS": hidden, "T": cta},
+        cta=(cta, 0, 0),
+    )
+
+
+def mhc_hc_head_apply(name, m, hidden, cta, check="ACCEPT", note=""):
+    """`mhc_hc_head_cuda` (mhc_cuda.py:1580): mixes, sqrsum = the [M, 4] HC-head GEMM, then
+    `mhc_hc_head_apply(mixes, sqrsum, x [M, 4, hidden], out, scale [1], base [4], M, 4, hidden, K = 4 hidden,
+    norm_eps, eps)` (:1620; mhcHcHeadApplyLaunch mhcKernels.cu:1108): grid M, block 256."""
+    k = 4 * hidden
+    return Case(
+        name=name,
+        description=f"mhcHcHeadApplyKernel, {m} tokens of 4 x {hidden}, block {cta}{note}",
+        source=f"{MHC}:885 (mhcHcHeadApplyKernel), host mhcHcHeadApplyLaunch :1108 from {MHC_PY}:1620",
+        unit=MHC,
+        symbol="20mhcHcHeadApplyKernel",
+        args=(Ptr("mixes"), Ptr("sqrsum"), Ptr("x"), Ptr("out"), Ptr("scale"), Ptr("base"), Int(4, "mult"),
+              Int(hidden, "hidden_size"), Int(k, "K"), Float(EPS, "norm_eps"), Float(EPS, "eps")),
+        arrays=(Array("mixes", "in", "f32", (m, 4)), Array("sqrsum", "in", "f32", (m,)),
+                Array("x", "in", "bf16", (m, 4, hidden)), Array("scale", "in", "f32", (1,)),
+                Array("base", "in", "f32", (4,)), Array("out", "out", "bf16", (m, hidden))),
+        grid=(m, 1, 1),
+        block=256,
+        check=check,
+        spec="mhc_hc_head_apply.spec",
+        dims={"M": m, "J": 4, "HS": hidden, "K": k, "T": cta, "ONE": 1},
+        cta=(cta, 0, 0),
+    )
+
+
+# Volta gap (UNKNOWN, true verdict expected ACCEPT): the GEMM widens bf16 to f32 by hand, `prmt.b32 t0, %r27,
+# %r28, %r29;` with %r27 = 0, %r28 a loaded bf16 pair and selector 0x5410 (mhcKernels.cu:614, mhcKernels.ptx:92901),
+# and Volta reads a prmt of a packed pair only when its high half is zero: "t0: value kind mismatch (packed pair
+# used as a prmt source) at pc:49".
+_MHC = (
+    mhc_gemm_sqrsum("mhc_gemm_sqrsum_pre_m8", 8, 24, 4096, cta=(7, 0), check="UNKNOWN",
+                    note=" (TN 1, the R column tile)"),
+    mhc_gemm_sqrsum("mhc_gemm_sqrsum_pre_m40_last", 40, 24, 4096, cta=(39, 2), check="UNKNOWN",
+                    note=" (TN 8, the last tile)"),
+    mhc_gemm_sqrsum("mhc_gemm_sqrsum_head_m200", 200, 4, 7168, cta=(199, 1), check="UNKNOWN", note=" (TN 2)"),
+    mhc_post_mapping("mhc_post_mapping_4096", 3, 4096, cta=2),
+    mhc_post_mapping("mhc_post_mapping_7168", 2, 7168, cta=1, note=" (7168 = 3.5 x 2048: a partial last pass)"),
+    # Volta gap (a false REJECT): the gate is the accurate expf (mhcKernels.cu:904) of a composite argument,
+    # range-reduced through `fma.rm.f32` by 0f4B400001; lowering drops that rounding, so the kernel's value
+    # reads exp(-v (H + L) / H) exp(n log 2) with n = 252 min(max(-0.00572 v + 0.5, 0), 1) - 126, not an
+    # integer, and the accurate-expf rewrite does not fire on it: "7168 element(s) refuted by a numeric
+    # counterexample, first out[7168]". The kernel computes sigmoid(v) + eps as its reference does.
+    mhc_hc_head_apply("mhc_hc_head_apply_7168", 2, 7168, cta=1, check="REJECT"),
+)
+CASES += _MHC + (negative(_MHC[3], {"T": 1}, "token 1"), negative(_MHC[4], {"J": 3}, "3 streams"))
+
+
+def mhc_big_fuse(name, m, hidden, splits, bs, cta, norm=False, lagged=False, tma=False, check="VERIFIED", note=""):
+    """`mhc_big_fuse_cuda` (mhc_cuda.py:87) as the pre-mapping tactic calls it (:446): the FMA fallback tactic
+    ("fma", 0, 0, 0, :296) gives num_splits 1 and block 0, so selectBigFuseBlockSize (mhcKernels.cu:977) 128 up
+    to M 16 else 256; the DeepGEMM split-K one 16 splits at block 128 (:55, :282). `mhcBigFuseLaunch` (:1040)
+    grid M, block BS, K = 4 hidden, sinkhorn_repeat 20 (DeepSeek-V4's hc_sinkhorn_iters). Race check only (the
+    Sinkhorn iteration's 20 nested normalizations are past the solver)."""
+    k = 4 * hidden
+    arrays = [Array("y_acc", "in", "f32", (splits, m, 24)), Array("r_acc", "in", "f32", (splits, m)),
+              Array("residual", "in", "bf16", (m, 4, hidden)), Array("hc_scale", "in", "f32", (3,)),
+              Array("hc_base", "in", "f32", (24,)), Array("post_mix", "out", "f32", (m, 4)),
+              Array("comb_mix", "out", "f32", (m, 16)), Array("layer_input", "out", "bf16", (m, hidden))]
+    if norm:
+        arrays.append(Array("norm_w", "in", "bf16", (hidden,)))
+    if lagged:
+        arrays += [Array("pre_ext", "in", "f32", (m, 4)), Array("pre_out", "out", "f32", (m, 4))]
+    return Case(
+        name=name,
+        description=f"mhcBigFuseKernel<{splits}, {bs}, norm {norm}, tma {tma}, lagged {lagged}>, M {m}, hidden "
+                    f"{hidden}, block {cta}{note}",
+        source=f"{MHC}:67 (mhcBigFuseKernel), host mhcBigFuseDispatch :986 / mhcBigFuseLaunch :1040 from {MHC_PY}:446",
+        unit=MHC,
+        symbol=f"16mhcBigFuseKernelILi{splits}ELi{bs}ELb{int(norm)}ELb{int(tma)}ELb{int(lagged)}EE",
+        args=(Ptr("y_acc"), Ptr("r_acc"), Ptr("residual"), Ptr("hc_scale"), Ptr("hc_base"), Ptr("post_mix"),
+              Ptr("comb_mix"), Ptr("layer_input"), Int(m, "M"), Int(k, "K"), Int(hidden, "hidden_size"),
+              Float(EPS, "rms_eps"), Float(EPS, "hc_pre_eps"), Float(EPS, "hc_sinkhorn_eps"),
+              Float(2.0, "hc_post_mult_value"), Int(20, "sinkhorn_repeat"), Ptr("norm_w") if norm else NULL,
+              Float(EPS, "norm_eps"), Ptr("pre_ext") if lagged else NULL, Ptr("pre_out") if lagged else NULL,
+              Int(splits, "numSplitsRuntime")),
+        arrays=tuple(arrays),
+        grid=(m, 1, 1),
+        block=bs,
+        check=check,
+        cta=(cta, 0, 0),
+        smem=4 * hidden * 2 if tma else 0,
+    )
+
+
+CASES += (
+    mhc_big_fuse("mhc_big_fuse_fma_m8", 8, 4096, 1, 128, cta=7),
+    mhc_big_fuse("mhc_big_fuse_dg16_m3", 3, 4096, 16, 128, cta=2, note=" (16 split partials)"),
+    mhc_big_fuse("mhc_big_fuse_fma_m40_norm_lagged", 40, 7168, 1, 256, cta=39, norm=True, lagged=True,
+                 note=" (fused next-layer RMSNorm, V4.1 lagged pre-mix)"),
+)
+
+
+MHC_FUSED = KERNELS + "mhcKernels/mhcFusedHcKernel.cu"
+
+
+def mhc_fused_ksplit(name, m, hidden, tn, ks, cta, check="ACCEPT", note=""):
+    """`mhcFusedHcFmaLaunch` (mhcFusedHcKernel.cu:595; op mhc_fused_hc's FMA backend) step 1: pickFhcFma(tile_n,
+    ks) (:563, the autotuner's tactics) `fused_pmap_gemm_fma_ksplit<TN, KS, 0, true>`, grid (M, 24 / TN, KS),
+    block 256, N 24, K 4 hidden, residual_out = residual_cur. Block `cta` = (token, column tile, split)."""
+    t, nb, s0 = cta
+    hps = hidden // ks
+    return Case(
+        name=name,
+        description=f"fused_pmap_gemm_fma_ksplit<{tn}, {ks}>, M {m}, hidden {hidden}, block (token {t}, columns "
+                    f"{nb * tn}..{nb * tn + tn}, hidden {s0 * hps}..{s0 * hps + hps}){note}",
+        source=f"{KERNELS}mhcKernels/mhc_fused_fma.cuh:54 (fused_pmap_gemm_fma_ksplit), host mhcFusedHcFmaLaunch "
+               f"{MHC_FUSED}:595",
+        unit=MHC_FUSED,
+        symbol=f"26fused_pmap_gemm_fma_ksplitILi{tn}ELi{ks}ELi0ELb1EE",
+        args=(Ptr("residual_in"), Ptr("x"), Ptr("post"), Ptr("comb"), Ptr("w"), Ptr("yp"), Ptr("rp"),
+              Int(hidden, "hidden_size"), Int(24, "N"), Int(4 * hidden, "K"), Ptr("residual_out")),
+        arrays=(Array("residual_in", "in", "bf16", (m, 4, hidden)), Array("x", "in", "bf16", (m, hidden)),
+                Array("post", "in", "f32", (m, 4)), Array("comb", "in", "f32", (m, 4, 4)),
+                Array("w", "in", "f32", (24, 4, hidden)), Array("yp", "out", "f32", (ks, m, 24)),
+                Array("rp", "out", "f32", (ks, m)), Array("residual_out", "out", "bf16", (m, 4, hidden))),
+        grid=(m, 24 // tn, ks),
+        block=256,
+        check=check,
+        spec="mhc_fused_ksplit.spec",
+        dims={"M": m, "J": 4, "HS": hidden, "N": 24, "KS": ks, "T": t, "N0": nb * tn, "N1": nb * tn + tn,
+              "H0": s0 * hps, "H1": s0 * hps + hps, "S0": s0, "SQ": int(nb == 0)},
+        cta=cta,
+    )
+
+
+_MHC_KSPLIT = (
+    mhc_fused_ksplit("mhc_fused_ksplit_tn1_ks1", 4, 4096, 1, 1, cta=(3, 0, 0)),
+    mhc_fused_ksplit("mhc_fused_ksplit_tn2_ks8", 3, 4096, 2, 8, cta=(2, 0, 7), note=" (BF16_VEC 2, last split)"),
+    mhc_fused_ksplit("mhc_fused_ksplit_tn3_ks4_tile", 2, 7168, 3, 4, cta=(1, 7, 3),
+                     note=" (BF16_VEC 4, the last column tile: no residual, no R)"),
+    mhc_fused_ksplit("mhc_fused_ksplit_tn24_ks1", 2, 5120, 24, 1, cta=(1, 0, 0)),
+)
+CASES += _MHC_KSPLIT + (negative(_MHC_KSPLIT[1], {"S0": 6}, "split 6"),)
+
+
+# ===== Mamba-2 SSD chunked scan: C^T B per chunk (selectiveScan/bmmchunk.h) =====
+
+SSD_TILES = {(128, 128, "small"): (64, 64, 64, 2, 2, 2, 2, 1), (128, 128, "big"): (128, 128, 64, 4, 2, 2, 1, 1)}
+
+
+def bmm_chunk(name, lens, heads, p, groups, n, cta, q=128, dtype="bf16", check="ACCEPT", note=""):
+    """`bmm_chunk<<<bds[3], tds[3], shms[3]>>>(B, L, H, P, G, N, CB, xBC, removePadding 1, lastTokenIds)`
+    (selectiveScan.cu:441, invokeChunkScan) with packed tokens; getBmmChunkKernel (bmmchunk.h:660) on SM100
+    (isHopper false, selectiveScan.cu:356), Q 128, N 128: compute = tokens G Q Q N below 2^36 gives
+    bmm_chunk_kernel<128, 64, 64, 64, 2, 2, 2, 2, 1> (:838): grid (G Q / 64 Q / 64, ceil(L / Q), B), block
+    (32, 2, 2), smem max((64 64 + 64 64) 2 2, 64 64 2). Block `cta` = (x, chunk y, sequence b)."""
+    tm, tn, tk, wm, wn, ps, pr, grp = SSD_TILES[(q, n, "small")]
+    tokens = sum(lens)
+    assert tokens * groups * q * q * n < 1 << 36
+    bx, by, b = cta
+    ends = [sum(lens[:i + 1]) for i in range(len(lens))]
+    a0 = ends[b - 1] if b else 0
+    cs = -(-a0 // q) + b - 1 if b else 0
+    ln = min(q, lens[b] - by * q)
+    ct = max((-(-(ends[i - 1] if i else 0) // q) + i - 1 if i else 0) + -(-lens[i] // q) for i in range(len(lens)))
+    nbn = q // tn
+    m_int, n_int = bx // nbn, bx % nbn
+    g0, mstart = m_int // (q // tm), m_int % (q // tm)
+    xw = heads * p + 2 * groups * n
+    t = {"f16": "6__half", "bf16": "13__nv_bfloat16"}[dtype]
+    return Case(
+        name=name,
+        description=f"bmm_chunk_kernel<{q}, {tm}, {tn}, {tk}, {wm}, {wn}, {ps}, {pr}, {grp}, {dtype}>, packed lengths "
+                    f"{lens}, H {heads} P {p} G {groups} N {n}, block {cta}: chunk {cs + by}, group {g0}, rows "
+                    f"{mstart * tm}.., columns {n_int * tn}..{note}",
+        source=f"{KERNELS}selectiveScan/bmmchunk.h:55 (bmm_chunk_kernel), host getBmmChunkKernel :660, launch "
+               f"invokeChunkScan selectiveScan.cu:441",
+        unit=SSD + f"bmmchunk_{'fp16' if dtype == 'f16' else 'bf16'}.cu",
+        symbol=f"16bmm_chunk_kernelILi{q}ELi{tm}ELi{tn}ELi{tk}ELi{wm}ELi{wn}ELi{ps}ELi{pr}ELi{grp}E{t}E",
+        args=(Int(len(lens), "B"), Int(max(lens), "L"), Int(heads, "H"), Int(p, "P"), Int(groups, "G"), Int(n, "N"),
+              Ptr("cb"), Ptr("x"), Int(1, "removePadding"), Ptr("ends")),
+        arrays=(Array("ends", "index", "i32", (len(lens),), contents=tuple(ends)),
+                Array("x", "in", dtype, (tokens, xw)), Array("cb", "out", dtype, (ct, groups, q, q))),
+        grid=(groups * q // tn * q // tm, -(-max(lens) // q), len(lens)),
+        block=(32, wn, wm),
+        check=check,
+        spec="bmm_chunk.spec",
+        dims={"T": tokens, "XW": xw, "CT": ct, "G": groups, "Q": q, "NS": n, "CI": cs + by, "G0": g0, "A0": a0 + by * q,
+              "LEN": ln, "M0": mstart * tm, "N0": n_int * tn, "TM": tm, "TN": tn, "BO": heads * p + g0 * n,
+              "CO": heads * p + groups * n + g0 * n},
+        cta=cta,
+        smem=max((tm * tk + tk * tn) * ps * 2, tm * tn * 2),
+    )
+
+
+_BMM_CHUNKS = (
+    bmm_chunk("bmm_chunk_bf16_2seq", (100, 60), 4, 64, 1, 128, cta=(0, 0, 1), note=" (the 60-token sequence)"),
+    bmm_chunk("bmm_chunk_bf16_2seq_pad_tile", (100, 60), 4, 64, 1, 128, cta=(3, 0, 1),
+              note=" (a tile past the sequence: all zeros)"),
+    bmm_chunk("bmm_chunk_f16_3chunks_g2", (300, 20), 2, 64, 2, 128, cta=(6, 2, 0),
+              note=" (the partial third chunk, group 1)"),
+    bmm_chunk("bmm_chunk_bf16_seq2_chunk1", (40, 200, 7), 2, 64, 2, 128, cta=(2, 1, 1),
+              note=" (sequence 1's second chunk, tokens 168..240)"),
+)
+CASES += _BMM_CHUNKS + (negative(_BMM_CHUNKS[0], {"LEN": 59}, "59 valid rows"),)
+
+
+def chunk_state(name, lens, heads, p, groups, n, cta, q=128, dtype="bf16", check="ACCEPT", note=""):
+    """`chunk_state<<<bds[1], tds[1], shms[1]>>>(B, L, H, P, G, N, St, dc, dA, xBC, removePadding 1,
+    lastTokenIds)` (selectiveScan.cu:432) with packed tokens; getChunkStateKernel (chunkstate.h:745) on SM100,
+    Q 128, P 64, N 128, compute = tokens H N P Q below 2^32: chunk_state_kernel<128, 64, 64, 32, 1, 2, 2, 1, 8, 0>
+    (:1672): grid (H P / 64 N / 64, ceil(L / Q), B), block (32, 2, 1), smem (64 32 + 32 64) 2 2 + Q 8.
+    Block `cta` = (x, chunk y, sequence b); with group 8 and H N / 64 a multiple of 8, x = 2 h + n / 64."""
+    tm, tn, tk, wm, wn, ps, pr, grp, chk = 64, 64, 32, 1, 2, 2, 1, 8, 0
+    tokens = sum(lens)
+    assert tokens * heads * n * p * q < 1 << 32 and p == 64 and n == 128 and (heads * 2) % 8 == 0
+    bx, by, b = cta
+    ends = [sum(lens[:i + 1]) for i in range(len(lens))]
+    a0 = ends[b - 1] if b else 0
+    cs = -(-a0 // q) + b - 1 if b else 0
+    ln = min(q, lens[b] - by * q)
+    ct = max((-(-(ends[i - 1] if i else 0) // q) + i - 1 if i else 0) + -(-lens[i] // q) for i in range(len(lens)))
+    h0, mstart = bx // (n // tm), bx % (n // tm)
+    g0 = h0 // (heads // groups)
+    xw = heads * p + 2 * groups * n
+    t = {"f16": "6__half", "bf16": "13__nv_bfloat16"}[dtype]
+    return Case(
+        name=name,
+        description=f"chunk_state_kernel<{q}, {tm}, {tn}, {tk}, {wm}, {wn}, {ps}, {pr}, {grp}, {chk}, {dtype}>, packed "
+                    f"lengths {lens}, H {heads} P {p} G {groups} N {n}, block {cta}: chunk {cs + by}, head {h0}, "
+                    f"states {mstart * tm}..{note}",
+        source=f"{KERNELS}selectiveScan/chunkstate.h:55 (chunk_state_kernel), host getChunkStateKernel :745, launch "
+               f"invokeChunkScan selectiveScan.cu:432",
+        unit=SSD + f"chunkstate_{'fp16' if dtype == 'f16' else 'bf16'}.cu",
+        symbol=f"18chunk_state_kernelILi{q}ELi{tm}ELi{tn}ELi{tk}ELi{wm}ELi{wn}ELi{ps}ELi{pr}ELi{grp}ELi{chk}E{t}E",
+        args=(Int(len(lens), "B"), Int(max(lens), "L"), Int(heads, "H"), Int(p, "P"), Int(groups, "G"), Int(n, "N"),
+              Ptr("st"), Ptr("dc"), Ptr("da"), Ptr("x"), Int(1, "removePadding"), Ptr("ends")),
+        arrays=(Array("ends", "index", "i32", (len(lens),), contents=tuple(ends)),
+                Array("x", "in", dtype, (tokens, xw)), Array("dc", "in", "f32", (ct, heads, q)),
+                Array("da", "in", "f32", (ct, heads, q)), Array("st", "out", "f32", (ct, heads, n, p))),
+        grid=(heads * (p // tn) * (n // tm), -(-max(lens) // q), len(lens)),
+        block=(32, wn, wm),
+        check=check,
+        spec="chunk_state.spec",
+        dims={"T": tokens, "XW": xw, "CT": ct, "H": heads, "N": n, "P": p, "Q": q, "QM1": q - 1, "CI": cs + by,
+              "H0": h0, "A0": a0 + by * q, "LEN": ln, "M0": mstart * tm, "P0": 0, "TM": tm, "TN": tn,
+              "BO": heads * p + g0 * n, "XO": h0 * p},
+        cta=cta,
+        smem=(tm * tk + tk * tn) * ps * 2 + q * 8,
+    )
+
+
+_CHUNK_STATES = (
+    chunk_state("chunk_state_bf16_2seq", (100, 60), 4, 64, 1, 128, cta=(7, 0, 1), note=" (the 60-token sequence)"),
+    chunk_state("chunk_state_f16_3chunks_g2", (300, 20), 4, 64, 2, 128, cta=(4, 2, 0),
+                note=" (the partial third chunk, head 2 of group 1)"),
+)
+CASES += _CHUNK_STATES + (negative(_CHUNK_STATES[0], {"LEN": 59}, "59 tokens"),)
+
+
+def chunk_scan(name, lens, heads, p, groups, n, cta, q=128, dtype="bf16", diag=False, check="ACCEPT", note=""):
+    """`chunk_scan<<<bds[4], tds[4], shms[4]>>>(B, L, H, P, G, N, Y, Os, dc, dA, CB, D, xBC, z, removePadding 1,
+    lastTokenIds)` (selectiveScan.cu:443) with packed tokens, no z (selectiveScanOp.cpp:127, z absent), D fp32;
+    getChunkScanKernel (chunkscan.h:1154) on SM100, Q 128, P 64, N 128, compute = tokens H P (N + Q) below 2^35:
+    chunk_scan_kernel<128, 64, 64, 32, 4, 1, 2, 1, 4, 0> (:1907): grid (H P / 64 Q / 64, ceil(L / Q), B), block
+    (32, 1, 4), smem max((64 32 + 32 64) 2 2 + Q 8, 64 64 2). Block `cta` = (x, chunk y, sequence b); with group 4
+    and 2 H a multiple of 4, x = 2 h + (row tile)."""
+    tm = 64
+    tokens = sum(lens)
+    assert tokens * heads * p * (n + q) < 1 << 35 and p == 64 and n == 128 and (2 * heads) % 4 == 0
+    bx, by, b = cta
+    ends = [sum(lens[:i + 1]) for i in range(len(lens))]
+    a0 = ends[b - 1] if b else 0
+    cs = -(-a0 // q) + b - 1 if b else 0
+    ln = min(q, lens[b] - by * q)
+    ct = max((-(-(ends[i - 1] if i else 0) // q) + i - 1 if i else 0) + -(-lens[i] // q) for i in range(len(lens)))
+    h0, mstart = bx // (q // tm), bx % (q // tm)
+    g0 = h0 // (heads // groups)
+    xw = heads * p + 2 * groups * n
+    first = a0 + by * q
+    r0, r1 = first + mstart * tm, first + min(ln, mstart * tm + tm)
+    t = {"f16": "6__half", "bf16": "13__nv_bfloat16"}[dtype]
+    return Case(
+        name=name,
+        description=f"chunk_scan_kernel<128, 64, 64, 32, 4, 1, 2, 1, 4, 0, {dtype}, float>, packed lengths {lens}, "
+                    f"H {heads} P {p} G {groups} N {n}, block {cta}: chunk {cs + by}, head {h0}, tokens {r0}..{r1}{note}",
+        source=f"{KERNELS}selectiveScan/chunkscan.h:55 (chunk_scan_kernel), host getChunkScanKernel :1154, launch "
+               f"invokeChunkScan selectiveScan.cu:443",
+        unit=SSD + f"chunkscan_{'fp16' if dtype == 'f16' else 'bf16'}_fp32.cu",
+        symbol=f"17chunk_scan_kernelILi128ELi64ELi64ELi32ELi4ELi1ELi2ELi1ELi4ELi0E{t}fE",
+        args=(Int(len(lens), "B"), Int(max(lens), "L"), Int(heads, "H"), Int(p, "P"), Int(groups, "G"), Int(n, "N"),
+              Ptr("y"), Ptr("os"), Ptr("dc"), Ptr("da"), Ptr("cb"), Ptr("d"), Ptr("x"), NULL, Int(1, "removePadding"),
+              Ptr("ends")),
+        arrays=(Array("ends", "index", "i32", (len(lens),), contents=tuple(ends)),
+                Array("x", "in", dtype, (tokens, xw)), Array("os", "in", dtype, (ct, heads, n, p)),
+                Array("dc", "in", "f32", (ct, heads, q)), Array("da", "in", "f32", (ct, heads, q)),
+                Array("cb", "in", dtype, (ct, groups, q, q)), Array("d", "in", "f32", (heads,)),
+                Array("y", "out", dtype, (tokens, heads, p))),
+        grid=(heads * (q // tm), -(-max(lens) // q), len(lens)),
+        block=(32, 1, 4),
+        check=check,
+        spec="chunk_scan_diag.spec" if diag else "chunk_scan.spec",
+        dims={"T": tokens, "XW": xw, "CT": ct, "H": heads, "G": groups, "NS": n, "P": p, "Q": q, "CI": cs + by,
+              "H0": h0, "G0": g0, "A0": first, "R0": r0, "R1": r1, "CO": heads * p + groups * n + g0 * n,
+              "XO": h0 * p},
+        cta=cta,
+        smem=max((64 * 32 + 32 * 64) * 2 * 2 + q * 8, 64 * 64 * 2),
+    )
+
+
+_CHUNK_SCANS = (
+    chunk_scan("chunk_scan_bf16_2seq", (100, 60), 2, 64, 1, 128, cta=(3, 0, 1),
+               note=" (the 60-token sequence's second row tile: empty)"),
+    # Volta gap (UNKNOWN, true verdict ACCEPT): the diagonal term's decay is CUDA's accurate expf(dA[i] - dA[i])
+    # (chunkscan.h:291); its lowered form, exp(((z L + z H) - n) / H) exp(n log 2) with n = 252 min(max(0.00572 z
+    # + 0.5, 0), 1) - 126 and z = da - da, is 1 but the canonicalizer keeps the min/max atom and neither proves
+    # nor refutes it: "3840 element(s) not proved equivalent and not refuted, first y[12864]". The `_diag` twins
+    # state that factor in its lowered form (chunk_scan_diag.spec, the same math) and are ACCEPT.
+    chunk_scan("chunk_scan_bf16_2seq_rows", (100, 60), 2, 64, 1, 128, cta=(2, 0, 1), check="UNKNOWN",
+               note=" (60 of 64 rows)"),
+    chunk_scan("chunk_scan_bf16_2seq_rows_diag", (100, 60), 2, 64, 1, 128, cta=(2, 0, 1), diag=True,
+               note=" (60 of 64 rows)"),
+    chunk_scan("chunk_scan_f16_3chunks_g2_diag", (300, 20), 4, 64, 2, 128, cta=(5, 1, 0), diag=True,
+               note=" (the full second chunk's upper rows, head 2 of group 1)"),
+    chunk_scan("chunk_scan_bf16_partial_last_diag", (300, 20), 2, 64, 1, 128, cta=(0, 2, 0), diag=True,
+               note=" (the partial third chunk: 44 rows)"),
+)
+CASES += _CHUNK_SCANS + (negative(_CHUNK_SCANS[3], {"G0": 0}, "group 0's CB"),)
+
+
+# ===== NVFP4 CUDA-core GEMM for small M (cudaCoreGemm/cudaCoreGemmNVFP4.cu) =====
+
+CORE_GEMM_FP4 = KERNELS + "cudaCoreGemm/cudaCoreGemmNVFP4.cu"
+
+
+def cuda_core_gemm_fp4(name, m, n, k, cta, dout="bf16", check="ABORT", note=""):
+    """`cuda_core_nvfp4_gemm(act_fp4 [m, k / 2], weight [n, k / 2], act_sf unswizzled, weight_sf (128 x 4
+    swizzled), alpha [1])` (thop/cudaNvfp4MM.cpp:30, from CudaCoreNVFP4Runner torch_custom_ops.py:1173, m <= 8):
+    cudaCoreGemmDispatcher (cudaCoreGemmNVFP4.cu:255, n even, k % 16 == 0): TILE_M = m, TILE_N 2, block 128,
+    grid (n / 2, 1). Packed e2m1 operands are byte (u8) arrays here: launch files have no fp4 element type."""
+    sf_cols = -(-(k // 16) // 4) * 4
+    return Case(
+        name=name,
+        description=f"cudaCoreGemmFp4<e2m1 -> {dout}, e4m3 scales, TILE_M {m}, 2, 128>, {m} x {n} x {k}, block {cta}"
+                    f"{note}",
+        source=f"{CORE_GEMM_FP4}:192 (cudaCoreGemmFp4), host cudaCoreGemmKernel :203 via cudaCoreGemmDispatcher :255, "
+               f"thop/cudaNvfp4MM.cpp:30",
+        unit=CORE_GEMM_FP4,
+        symbol=f"15cudaCoreGemmFp4I13__nv_fp4_e2m1{T_MANGLED[dout]}13__nv_fp8_e4m3Li{m}ELi2ELi128EE",
+        args=(Ptr("act"), Ptr("w"), Ptr("sa"), Ptr("sw"), Ptr("alpha"), Ptr("out"), NULL, Int(m, "m"), Int(n, "n"),
+              Int(k, "k")),
+        arrays=(Array("act", "in", "u8", (m, k // 2)), Array("w", "in", "u8", (n, k // 2)),
+                Array("sa", "in", "e4m3", (128, sf_cols)), Array("sw", "in", "e4m3", (-(-n // 128) * 128, sf_cols)),
+                Array("alpha", "in", "f32", (1,)), Array("out", "out", dout, (m, n))),
+        grid=(n // 2, 1, 1),
+        block=128,
+        check=check,
+        cta=(cta, 0, 0),
+    )
+
+
+# Volta gap (ABORT): cutlass's e2m1 -> f32 NumericArrayConverter decodes by table, the loaded word's nibbles
+# as prmt selectors (`and.b32 prmt_ctrl0123, %r69, 0x7777; ... prmt.b32 target0123, %r70, %r71,
+# prmt_ctrl0123;`, cudaCoreGemmNVFP4.ptx:68474): "t0: value kind mismatch (packed byte-quad used as a scalar)
+# at pc:107". Data as a permutation selector has no symbolic reading.
+CASES += (cuda_core_gemm_fp4("cuda_core_gemm_fp4_bf16_m2", 2, 256, 4096, cta=127),)
+
+
+# ===== Llama 4 min-latency FP8 QKV GEMM (llama4MinLatencyKernels/llama4Fp8Bf16Gemm.cu) =====
+
+LLAMA4_FP8 = KERNELS + "llama4MinLatencyKernels/llama4Fp8Bf16Gemm.cu"
+LLAMA4_FP8_TILES = {1: (1, 1), 2: (2, 1), 3: (1, 4), 4: (2, 2), 5: (1, 4), 6: (3, 4), 7: (1, 4), 8: (2, 4)}
+
+
+def llama4_fp8_gemm(name, tokens, cta, check="ACCEPT", note=""):
+    """`llama4_fp8_bf16_gemm(input [T, 5120] e4m3, weight [896, 5120], combined_scale, position_ids None)`
+    (modeling_llama_min_latency.py:181; thop/llama4MinLatency.cpp:100) without position ids:
+    llama4_fp8_bf16_gemm_launcher (llama4Fp8Bf16Gemm.cu:31) picks (TILE_TOKEN, TILE_OUT) by T, grid
+    (896 / TILE_OUT, T / TILE_TOKEN), block 128 (llama4Utils.cuh:49). Block `cta` = (row tile, token tile)."""
+    tt, to = LLAMA4_FP8_TILES[tokens]
+    rx, ty = cta
+    return Case(
+        name=name,
+        description=f"llama4_fp8_bf16_gemm_per_block_kernel<5120, {tt}, {to}>, {tokens} tokens x 896 x 5120, block "
+                    f"{cta}{note}",
+        source=f"{KERNELS}llama4MinLatencyKernels/llama4Fp8Bf16GemmPerBlockTemplate.cuh:35, host "
+               f"llama4_fp8_bf16_gemm_launcher {LLAMA4_FP8}:31, thop/llama4MinLatency.cpp:100",
+        unit=LLAMA4_FP8,
+        symbol=f"37llama4_fp8_bf16_gemm_per_block_kernelILi5120ELi{tt}ELi{to}ELb1EE",
+        args=(Ptr("a"), Ptr("w"), Ptr("out"), Ptr("scale"), Int(tokens, "num_tokens"), Int(5120, "hidden_in"),
+              Int(896, "hidden_out")),
+        arrays=(Array("a", "in", "e4m3", (tokens, 5120)), Array("w", "in", "e4m3", (896, 5120)),
+                Array("scale", "in", "f32", (1,)), Array("out", "out", "bf16", (tokens, 896))),
+        grid=(896 // to, tokens // tt, 1),
+        block=128,
+        check=check,
+        spec="llama4_fp8_gemm.spec",
+        dims={"T": tokens, "OUT": 896, "K": 5120, "N0": rx * to, "N1": rx * to + to, "M0": ty * tt, "M1": ty * tt + tt,
+              "ONE": 1},
+        cta=(rx, ty, 0),
+    )
+
+
+_LLAMA4_FP8 = (
+    llama4_fp8_gemm("llama4_fp8_gemm_3tok", 3, cta=(223, 2), note=" (TILE_OUT 4, the last block)"),
+    llama4_fp8_gemm("llama4_fp8_gemm_2tok", 2, cta=(17, 0), note=" (TILE_TOKEN 2)"),
+    llama4_fp8_gemm("llama4_fp8_gemm_1tok", 1, cta=(895, 0)),
+)
+CASES += _LLAMA4_FP8 + (negative(_LLAMA4_FP8[1], {"M1": 1}, "token 1 unwritten"),)
+
+
+# Volta gap (lowering): with position ids (should_fuse_attn_scaling, modeling_llama_min_latency.py:175) the
+# attention-scaling variant (llama4_fp8_bf16_gemm_attn_scaling_launcher, llama4Fp8Bf16Gemm.cu:112) scales Q
+# rows by log(floor((pos + 1) / floor_scale) + 1) attn_scale + 1, its floor `cvt.rmi.f32.f32 %r134, %r133;`
+# (llama4Fp8Bf16Gemm.ptx:70497): "integer-rounding modifier (floor/ceil/trunc/rint not modeled)".
+CASES += (Case(
+    name="llama4_fp8_gemm_attn_scaling_3tok",
+    description="llama4_fp8_bf16_gemm_attn_scaling_per_block_kernel<5120, 1, 4, true, int32 pos>, 3 tokens x 896 x "
+                "5120, block (159, 2): Q rows 636..640",
+    source=f"{KERNELS}llama4MinLatencyKernels/llama4Fp8Bf16GemmAttnScalingPerBlockTemplate.cuh, host "
+           f"llama4_fp8_bf16_gemm_attn_scaling_launcher {LLAMA4_FP8}:112, thop/llama4MinLatency.cpp:100",
+    unit=LLAMA4_FP8,
+    symbol="50llama4_fp8_bf16_gemm_attn_scaling_per_block_kernelILi5120ELi1ELi4ELb1EiEE",
+    args=(Ptr("a"), Ptr("w"), Ptr("out"), Ptr("scale"), Ptr("pos"), Float(8192.0, "floor_scale"),
+          Float(0.10000000149011612, "attn_scale"), Int(3, "num_tokens"), Int(5120, "hidden_in"),
+          Int(896, "hidden_out"), Int(640, "q_hidden_out")),
+    arrays=(Array("pos", "index", "i32", (3,), contents=(5, 9000, 20000)), Array("a", "in", "e4m3", (3, 5120)),
+            Array("w", "in", "e4m3", (896, 5120)), Array("scale", "in", "f32", (1,)),
+            Array("out", "out", "bf16", (3, 896))),
+    grid=(224, 3, 1),
+    block=128,
+    check="ABORT",
+    cta=(159, 2, 0),
+),)
+
+
+# ===== DiT QK RMSNorm + RoPE, per head (fusedDiTQKNormRopeKernel.cu) =====
+
+DIT_QK = KERNELS + "fusedDiTQKNormRopeKernel.cu"
+
+
+def dit_qk_norm_rope(name, tokens, heads, d, block, interleave=True, txt=-1, add=False, tokens_per_batch=0,
+                     cos_seq=0, check="ACCEPT", note=""):
+    """`fused_dit_qk_norm_rope(qkv [T, 3 heads D], q_w, k_w, q_add, k_add, cos, sin (fp32 [rows, D]), ...)` per-head
+    path (thop/fusedDiTQKNormRopeOp.cpp:152): `launchFusedDiTQKNormRope` (:353) grid ceil(T 2 heads / 8), block 256,
+    one warp per (token, q or k head). With 2 heads a multiple of 8 a block is one token's 8 heads."""
+    qk = 2 * heads
+    assert qk % 8 == 0
+    t0, h0 = divmod(block * 8, qk)
+    lt = t0 % tokens_per_batch if tokens_per_batch else t0
+    use_add = int(txt > 0 and lt < txt and add)
+    rows = cos_seq or tokens
+    cr = t0 % cos_seq if cos_seq else t0
+    shape = (d // 2, 2) if interleave else (2, d // 2)
+    return Case(
+        name=name,
+        description=f"fusedDiTQKNormRopeKernel<{d}, {interleave}>, {tokens} tokens x {heads} heads, block {block}: token "
+                    f"{t0}, heads {h0}..{h0 + 8}{note}",
+        source=f"{DIT_QK}:44 (fusedDiTQKNormRopeKernel), host launchFusedDiTQKNormRope :353, "
+               f"thop/fusedDiTQKNormRopeOp.cpp:152",
+        unit=DIT_QK,
+        symbol=f"24fusedDiTQKNormRopeKernelILi{d}ELb{int(interleave)}EE",
+        args=(Ptr("qkv"), Int(heads, "num_heads_q"), Int(heads, "num_heads_k"), Int(heads, "num_heads_v"),
+              Float(EPS, "eps"), Ptr("q_w"), Ptr("k_w"), Ptr("q_add") if add else NULL, Ptr("k_add") if add else NULL,
+              Ptr("cos_emb"), Ptr("sin_emb"), Int(tokens, "num_tokens"), Int(txt, "num_txt_tokens"),
+              Int(tokens_per_batch, "tokens_per_batch"), Int(cos_seq, "cos_seq_per_batch")),
+        arrays=(Array("qkv", "inout", "bf16", (tokens, 3 * heads, *shape)),
+                *(Array(w, "in", "bf16", shape) for w in ("q_w", "k_w", "q_add", "k_add")),
+                Array("cos_emb", "in", "f32", (rows, *shape)), Array("sin_emb", "in", "f32", (rows, *shape))),
+        grid=(-(-tokens * qk // 8), 1, 1),
+        block=256,
+        check=check,
+        spec=f"dit_qk_norm_rope_{'interleave' if interleave else 'half'}.spec",
+        dims={"T": tokens, "NH": 3 * heads, "D": d, "D2": d // 2, "TWO": 2, "CROWS": rows, "T0": t0, "H0": h0,
+              "H1": h0 + 8, "HQ": heads, "ADD": use_add, "CR": cr},
+        cta=(block, 0, 0),
+    )
+
+
+_DIT_QK = (
+    dit_qk_norm_rope("dit_qk_norm_rope_flux_txt", 6, 24, 128, block=14, txt=4, add=True,
+                     note=" (FLUX dual stream: a text token, k heads 16..24 with the add weights)"),
+    dit_qk_norm_rope("dit_qk_norm_rope_flux_img", 6, 24, 128, block=29, txt=4, add=True,
+                     note=" (an image token: primary weights)"),
+    dit_qk_norm_rope("dit_qk_norm_rope_half_batched", 8, 20, 64, block=34, interleave=False, tokens_per_batch=4,
+                     cos_seq=4, note=" (rotate_half, head_dim 64, batch 2 x 4 with cos broadcast)"),
+    dit_qk_norm_rope("dit_qk_norm_rope_half_d256", 2, 4, 256, block=1, interleave=False, note=" (head_dim 256)"),
+)
+CASES += _DIT_QK + (negative(_DIT_QK[0], {"ADD": 0}, "primary weights"),
+                    negative(_DIT_QK[2], {"CR": 1}, "cos row 1"))
+
+
+# ===== DiT AdaLN: RMSNorm + shift/scale modulation, TMA-pipelined (fusedDiTGateResidNormShiftScaleKernel.cu) =====
+
+DIT_ADALN = KERNELS + "fusedDiTGateResidNormShiftScaleKernel.cu"
+# AdaLNNormParams (fusedDiTGateResidNormShiftScaleKernel.h), by field: offset (PTX `.param .align 8 .b8 [208]`,
+# loads at +48 scale_table, +64 scale_ts, +80 scale_ts_stride, +88 shift_table, +104 shift_ts, +120
+# shift_ts_stride, +128 out_bf16, +192 num_tokens, +196 tokens_per_batch, +200 eps).
+ADALN_OFFSETS = {"x": 0, "x_out": 8, "attn": 16, "gate_table": 24, "gate_ts": 32, "gate_ts_stride": 40,
+                 "scale_table": 48, "scale_ts": 64, "scale_ts_stride": 80, "shift_table": 88, "shift_ts": 104,
+                 "shift_ts_stride": 120, "out_bf16": 128, "out_fp4": 144, "out_sf": 160, "sf_scale": 176,
+                 "num_tokens": 192, "tokens_per_batch": 196, "eps": 200}
+assert max(ADALN_OFFSETS.values()) + 8 == 208
+
+
+def dit_adaln(name, tokens, tpb, cta, check="ACCEPT", note=""):
+    """See dit_adaln_case; the host picks the pipelined kernel when T % 4 == 0 and tokens_per_batch % 4 == 0
+    (:1006), else the one-row kernel (:1043: grid T, block 256, smem 4096 bf16 + 8 floats, TMA for D 4096)."""
+    return dit_adaln_case(name, tokens, tpb, cta, tokens % 4 == 0 and tpb % 4 == 0, check, note)
+
+
+def dit_adaln_case(name, tokens, tpb, cta, pipelined, check, note):
+    """`launchFusedDiTGateResidNormShiftScaleKernel(params, residual 0, gate 0, norm 1, shift_scale 1, NUM_OUT 1,
+    quant 0, hidden 4096)` (fusedDiTGateResidNormShiftScaleKernel.cu:1090; the WAN/FLUX AdaLN-modulated norm): on
+    SM100 with num_tokens % 4 == 0 and tokens_per_batch % 4 == 0 the pipelined kernel (:1006): grid T / 4, block
+    288 (a TMA producer warp + 8 consumers), smem 3 x 4096 bf16 + 2 x 3 x 8 + 32 + 16. Timestep rows stride D."""
+    d = 4096
+    struct = []
+    for field, value in (("x", "x"), ("scale_table", "scale_table"), ("scale_ts", "scale_ts"),
+                         ("shift_table", "shift_table"), ("shift_ts", "shift_ts"), ("out_bf16", "out")):
+        struct.append({"offset": ADALN_OFFSETS[field], "ptr": value})
+    struct += [{"offset": ADALN_OFFSETS["scale_ts_stride"], "u32": d},
+               {"offset": ADALN_OFFSETS["shift_ts_stride"], "u32": d},
+               {"offset": ADALN_OFFSETS["num_tokens"], "u32": tokens},
+               {"offset": ADALN_OFFSETS["tokens_per_batch"], "u32": tpb},
+               {"offset": ADALN_OFFSETS["eps"], "u32": _f32_bits(EPS)}]
+    batches = tokens // tpb
+    rows = 4 if pipelined else 1
+    return Case(
+        name=name,
+        description=(f"fusedDiTGateResidNormShiftScaleKernelPipelined<4096, 4, 3, shift_scale, 1 out>" if pipelined else
+                     f"fusedDiTGateResidNormShiftScaleKernel<4096, 1, 256, norm, shift_scale, 1 out>")
+                    + f", {tokens} tokens ({tpb} a batch element), block {cta}: tokens {rows * cta}..{rows * cta + rows}"
+                      f"{note}",
+        source=f"{DIT_ADALN}:{573 if pipelined else 113} (fusedDiTGateResidNormShiftScaleKernel"
+               f"{'Pipelined' if pipelined else ''}), host launchFusedDiTGateResidNormShiftScaleKernelImpl :986",
+        unit=DIT_ADALN,
+        symbol="46fusedDiTGateResidNormShiftScaleKernelPipelinedILi4096ELi4ELi3ELb0ELb0ELb1ELi1ELb0EE" if pipelined
+               else "37fusedDiTGateResidNormShiftScaleKernelILi4096ELi1ELi256ELb0ELb0ELb1ELb1ELi1ELb0EE",
+        args=(Struct(tuple(struct), "params"),),
+        arrays=(Array("x", "in", "bf16", (tokens, d)), Array("scale_table", "in", "f32", (d,)),
+                Array("scale_ts", "in", "bf16", (batches, d)), Array("shift_table", "in", "f32", (d,)),
+                Array("shift_ts", "in", "bf16", (batches, d)), Array("out", "out", "bf16", (tokens, d))),
+        grid=(tokens // rows, 1, 1),
+        block=288 if pipelined else 256,
+        check=check,
+        spec="dit_adaln_norm.spec",
+        dims={"T": tokens, "D": d, "B": batches, "R0": rows * cta, "R1": rows * cta + rows, "BI": rows * cta // tpb},
+        cta=(cta, 0, 0),
+        smem=3 * d * 2 + 2 * 3 * 8 + 8 * 4 + 16 if pipelined else d * 2 + 8 * 4,
+    )
+
+
+_DIT_ADALN = (dit_adaln("dit_adaln_pipelined_b2", 16, 8, cta=3, note=" (batch element 1, the last block)"),
+              dit_adaln("dit_adaln_rows_b2", 6, 3, cta=4, note=" (6 tokens: the one-row kernel)"))
+CASES += _DIT_ADALN + (negative(_DIT_ADALN[0], {"BI": 0}, "batch element 0's modulators"),)

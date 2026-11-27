@@ -32,7 +32,7 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
                      "fused-A GEMM generic-address arrive and mbarrier re-init, latent (8, 9)":
                      ["dsv3FusedAGemm.cu:"],
                      "Kimi-K3 TMEM lane quadrant and ld-before-dealloc order, latent (10, 11)":
-                     ["kimiK3AttnRes/attnResFwd.cu:"],
+                     ["kimiK3AttnRes/attnResFwd"],
                      "GroupRMSNorm shared-memory race (12)": ["groupRmsNormKernels.cu:"],
                      "per-channel scale past the last row, latent (13)": ["preQuantScaleKernel.cu:"]},
     "flashinfer": {"MergeStateInPlace LSE race, latent (4d)": ["MergeStateInPlaceKernel"]},
@@ -57,11 +57,13 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
 # formal cross-lane race harmless in practice; "open": a verdict resting on an open modeling
 # question of volta_findings.txt ((a) happens-before through tracked async ops, (c) the
 # proxy-order pair named); "lead": a defect read in the code before Volta reported it, which
-# the evaluation does not count. A rejection under no marker is "untriaged".
+# the evaluation does not count; "gap": a rejection that is Volta's own error (a false refutation
+# from its exact-real model), counted as incomplete. A rejection under no marker is "untriaged".
 REJECTIONS = {
     "FlashInfer": {"benign": ["MergeStatesLargeNumIndexSetsKernel",
                               "PersistentVariableLengthMergeStatesKernel"]},
-    "TensorRT-LLM": {"lead": ["prepareAttentionMaskIiLNS1_17AttentionMaskTypeE2EE"]},
+    "TensorRT-LLM": {"lead": ["prepareAttentionMaskIiLNS1_17AttentionMaskTypeE2EE"],
+                     "gap": ["mhcHcHeadApply"]},
     "ThunderKittens": {"open": ["level_07", "level_08"]},
     "TileLang": {"benign": ["gemv/naive_gemv", "gemv/splitk_gemv_vectorized_tvm"]},
     "Gluon": {"benign": ["04-tma/", "06-tcgen05/tmem_example", "10-tcgen05-copy/tcgen05_copy"],
@@ -162,6 +164,7 @@ def main() -> int:
             if outcome == "rejected":
                 outcome = next((category for category, marks in triage.items()
                                 if any(covers(m, kernel) for m in marks)), "untriaged")
+                outcome = "incomplete" if outcome == "gap" else outcome
             counts[outcome] += 1
         text = "; ".join(f"{name} ({len(ks)})" for name, ks in found.items()) or "—"
         cells = [counts[c] or "—" for c in
