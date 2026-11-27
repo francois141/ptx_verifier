@@ -3,11 +3,11 @@
 //! share.
 
 use crate::frontend::ast::{
-    self, AbsInstr, AddInstr, BfeInstr, BfiInstr, CopysignInstr, CvtInstr, CvtRounding, DivInstr,
-    Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr, MaxInstr, MinInstr,
-    MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PopcInstr, PrmtInstr, RcpInstr,
-    RemInstr, RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr, ShiftInstr, SqrtInstr,
-    SubInstr, TanhInstr,
+    self, AbsInstr, AddInstr, BfeInstr, BfiInstr, BfindInstr, BrevInstr, CopysignInstr, CvtInstr,
+    CvtRounding, DivInstr, Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr,
+    MaxInstr, MinInstr, MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PopcInstr,
+    PrmtInstr, RcpInstr, RemInstr, RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr,
+    ShiftInstr, SqrtInstr, SubInstr, TanhInstr,
 };
 
 use crate::ir::types::ScalarTypeExt;
@@ -1649,6 +1649,55 @@ pub(super) fn lower_popc(
             dst: dst_typed.reg,
             src: src_typed.operand,
             ty: popc.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// `brev.{b32,b64} d, a`: `a`'s bits reversed, at its own width.
+pub(super) fn lower_brev(
+    ctx: &mut LoweringContext,
+    brev: &BrevInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&brev.dst)?;
+    let src_typed = ctx.resolve_operand_typed(&brev.src)?;
+    ctx.check_dst_type(&dst_typed, brev.ty, "brev")?;
+    ctx.check_operand_type(&src_typed, brev.ty, "brev")?;
+    ctx.emit(
+        LoweredInstr::UnaryOp {
+            op: UnaryOp::Brev,
+            dst: dst_typed.reg,
+            src: src_typed.operand,
+            ty: brev.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// `bfind{.shiftamt}.{u32,u64,s32,s64} d, a`: `d` is a 32-bit position.
+pub(super) fn lower_bfind(
+    ctx: &mut LoweringContext,
+    bfind: &BfindInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&bfind.dst)?;
+    let src_typed = ctx.resolve_operand_typed(&bfind.src)?;
+    ctx.check_dst_type(&dst_typed, ScalarType::U32, "bfind")?;
+    ctx.check_operand_type(&src_typed, bfind.ty, "bfind")?;
+    let op = if bfind.shiftamt {
+        UnaryOp::BfindShiftAmt
+    } else {
+        UnaryOp::Bfind
+    };
+    ctx.emit(
+        LoweredInstr::UnaryOp {
+            op,
+            dst: dst_typed.reg,
+            src: src_typed.operand,
+            ty: bfind.ty,
         },
         predicate,
     )?;

@@ -367,6 +367,8 @@ fn lower_parsed_instruction(
         ParsedInstruction::Xor(logic) => lower_logic(ctx, BinOp::Xor, "xor", logic, predicate),
         ParsedInstruction::Not(not) => lower_not(ctx, not, predicate),
         ParsedInstruction::Popc(popc) => lower_popc(ctx, popc, predicate),
+        ParsedInstruction::Brev(brev) => arith::lower_brev(ctx, brev, predicate),
+        ParsedInstruction::Bfind(bfind) => arith::lower_bfind(ctx, bfind, predicate),
         ParsedInstruction::Shl(shift) => lower_shift(ctx, BinOp::Shl, "shl", shift, predicate),
         ParsedInstruction::Shr(shift) => lower_shift(ctx, BinOp::Shr, "shr", shift, predicate),
         ParsedInstruction::Shf(shf) => lower_shf(ctx, shf, predicate),
@@ -395,6 +397,7 @@ fn lower_parsed_instruction(
         ParsedInstruction::Lop3(lop3) => lower_lop3(ctx, lop3, predicate),
         ParsedInstruction::ShflSync(shfl) => lower_shfl_sync(ctx, shfl, predicate),
         ParsedInstruction::ElectSync(elect) => lower_elect_sync(ctx, elect, predicate),
+        ParsedInstruction::VoteSync(vote) => warp::lower_vote_sync(ctx, vote, predicate),
         ParsedInstruction::Bra(bra) => lower_branch(ctx, bra, predicate),
         ParsedInstruction::Ret(ast::RetInstr {
             // .uni is a divergence hint; it does not change what ret does.

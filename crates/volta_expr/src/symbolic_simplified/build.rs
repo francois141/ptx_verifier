@@ -744,9 +744,12 @@ impl ExprArena {
         }
     }
 
-    /// Logical NOT.
+    /// Logical NOT, folding a constant operand.
     pub fn not(&mut self, a: ExprId) -> ExprId {
-        self.push(ExprNode::Not(a))
+        match self.as_bool(a) {
+            Some(b) => self.bool_val(!b),
+            None => self.push(ExprNode::Not(a)),
+        }
     }
 
     // =================================================================

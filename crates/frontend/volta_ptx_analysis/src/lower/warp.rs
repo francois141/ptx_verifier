@@ -4,7 +4,7 @@
 use crate::frontend::ascii::AsciiSliceExt;
 use crate::frontend::ast::{
     BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, ScalarType,
-    SetmaxnregInstr, SharedStateSpaceQualifier, ShflSyncInstr,
+    SetmaxnregInstr, SharedStateSpaceQualifier, ShflSyncInstr, VoteSyncInstr,
 };
 use crate::frontend::lex::DottedIdent;
 
@@ -77,6 +77,34 @@ pub(super) fn lower_elect_sync(
         LoweredInstr::ElectSync {
             dst,
             dst_pred,
+            membermask,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `vote.sync.mode d, {!}a, membermask`; the source is a predicate, `!` kept apart.
+pub(super) fn lower_vote_sync(
+    ctx: &mut LoweringContext,
+    vote: &VoteSyncInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst = ctx.resolve_dst(&vote.dst)?;
+    let (src, negated) = match &vote.src {
+        AstOperand::PredicateOperand { negated, name } => (
+            ctx.resolve_operand(&AstOperand::Ident(name.clone()))?,
+            *negated,
+        ),
+        other => (ctx.resolve_operand(other)?, false),
+    };
+    let membermask = ctx.resolve_operand(&vote.membermask)?;
+    ctx.emit(
+        LoweredInstr::VoteSync {
+            mode: vote.mode,
+            dst,
+            src,
+            negated,
             membermask,
         },
         predicate,

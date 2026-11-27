@@ -116,6 +116,15 @@ impl Interpreter<'_> {
             LoweredInstr::ElectSync { dst, dst_pred, .. } => {
                 self.exec_elect_sync(members, *dst, *dst_pred);
             }
+            LoweredInstr::VoteSync {
+                mode,
+                dst,
+                src,
+                negated,
+                ..
+            } => {
+                self.exec_vote_sync(pc, mask, members, *mode, *dst, src, *negated)?;
+            }
             LoweredInstr::ShflSync {
                 mode,
                 dst,
@@ -235,7 +244,8 @@ impl Interpreter<'_> {
             // and the ISA states no exited-lane UB for them, so a partial warp is fine.
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
-            | LoweredInstr::ElectSync { .. } => Ok(()),
+            | LoweredInstr::ElectSync { .. }
+            | LoweredInstr::VoteSync { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // In particular an exited address-supplying lane (`i*8 + r`) leaves
                 // row r's footprint unknowable.
@@ -464,6 +474,81 @@ impl Interpreter<'_> {
                 self.write_reg(m, reg, Value::Scalar(v));
             }
         }
+    }
+
+    /// `vote.sync`: the members' predicates (an exited mask lane is rejected beforehand; a
+    /// mask lane past the CTA's last thread does not exist and votes nothing).
+    #[allow(clippy::too_many_arguments)]
+    fn exec_vote_sync(
+        &mut self,
+        pc: InstrId,
+        mask: u32,
+        members: &[ThreadId],
+        mode: crate::frontend::ast::VoteMode,
+        dst: RegId,
+        src: &Operand,
+        negated: bool,
+    ) -> EvalResult<()> {
+        use crate::frontend::ast::VoteMode;
+        use volta_expr::symbolic_full::Type;
+        let mut votes = Vec::with_capacity(members.len());
+        for &m in members {
+            let p = self.scalar_operand(m, pc, src)?;
+            let p = if negated {
+                self.arena.not(Type::Pred, p)
+            } else {
+                p
+            };
+            votes.push((m.0 % WARP_SIZE, p));
+        }
+        // Every mask lane must execute the vote (PTX ISA 9.7.13.6); an exited one cannot.
+        let warp = members[0].0 / WARP_SIZE;
+        let in_cta = (0..WARP_SIZE)
+            .filter(|lane| mask & (1 << lane) != 0)
+            .filter(|lane| warp * WARP_SIZE + lane < self.n_threads)
+            .count();
+        if members.len() != in_cta {
+            return Err(EvalError::WarpMismatch {
+                pc,
+                reason: format!(
+                    "vote.sync with {} of its {in_cta} mask lanes live: every mask lane must \
+                     execute it",
+                    members.len()
+                ),
+            });
+        }
+        let result = match mode {
+            VoteMode::Ballot => {
+                let mut bits = self.arena.int(0);
+                for &(lane, p) in &votes {
+                    let bit = self.arena.int(1i64 << lane);
+                    let zero = self.arena.int(0);
+                    let term = self.arena.select(Type::Bits(Width(32)), p, bit, zero);
+                    bits = self.arena.bit_or(Type::Bits(Width(32)), bits, term);
+                }
+                bits
+            }
+            VoteMode::All | VoteMode::Any | VoteMode::Uni => {
+                let mut all = self.arena.bool_val(true);
+                let mut any = self.arena.bool_val(false);
+                for &(_, p) in &votes {
+                    all = self.arena.and(Type::Pred, all, p);
+                    any = self.arena.or(Type::Pred, any, p);
+                }
+                match mode {
+                    VoteMode::All => all,
+                    VoteMode::Any => any,
+                    _ => {
+                        let none = self.arena.not(Type::Pred, any);
+                        self.arena.or(Type::Pred, all, none)
+                    }
+                }
+            }
+        };
+        for &m in members {
+            self.write_reg(m, dst, Value::Scalar(result));
+        }
+        Ok(())
     }
 
     /// `ldmatrix...xN.m8n8{.trans}.shared.b16`: lane `i*8 + r` supplies row `r` of

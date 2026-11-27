@@ -1689,6 +1689,12 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            LoweredInstr::VoteSync { membermask, .. } => {
+                let mask = self.concrete_operand(t, pc, membermask, "vote.sync membermask")? as u32;
+                self.block_at_warp_op(t, pc, mask)?;
+                return Ok(());
+            }
+
             // Tensor-core operations synchronize the full warp.
             LoweredInstr::Ldmatrix { .. }
             | LoweredInstr::Movmatrix { .. }

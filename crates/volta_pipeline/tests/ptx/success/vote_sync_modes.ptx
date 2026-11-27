@@ -1,0 +1,38 @@
+// vote.sync over a warp (CUTLASS's grouped-GEMM scheduler votes on problem indices): p = tid % 3
+// == 0. out[8 tid ..]: ballot(p) = 0x49249249, ballot(!p) over the low half-warp = 0x00006db6,
+// any(p) = 1, all(p) = 0, uni(p) = 0, uni(tid < 64) = 1 (as 1/0 words).
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<9>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r1, %tid.x;
+    rem.u32 %r2, %r1, 3;
+    setp.eq.u32 %p1, %r2, 0;
+    vote.sync.ballot.b32 %r3, %p1, -1;
+    setp.lt.u32 %p2, %r1, 16;
+    mov.u32 %r4, 0;
+    @%p2 vote.sync.ballot.b32 %r4, !%p1, 65535;
+    vote.sync.any.pred %p3, %p1, -1;
+    vote.sync.all.pred %p4, %p1, -1;
+    vote.sync.uni.pred %p5, %p1, -1;
+    setp.lt.u32 %p6, %r1, 64;
+    vote.sync.uni.pred %p7, %p6, -1;
+    selp.u32 %r5, 1, 0, %p3;
+    selp.u32 %r6, 1, 0, %p4;
+    selp.u32 %r7, 1, 0, %p5;
+    selp.u32 %r8, 1, 0, %p7;
+    mul.wide.u32 %rd2, %r1, 32;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v2.u32 [%rd3], {%r3, %r4};
+    st.global.v4.u32 [%rd3+16], {%r5, %r6, %r7, %r8};
+    ret;
+}

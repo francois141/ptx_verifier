@@ -1,0 +1,33 @@
+// brev and bfind on concrete words (CUTLASS's grouped-GEMM scheduler): out = brev.b32 0x1 =
+// 0x80000000, brev.b64 0x3 (low word 0, high 0xc0000000), bfind.u32 0x50 = 6,
+// bfind.shiftamt.u32 0x50 = 25, bfind.s32 -8 = 2 (first bit unlike the sign), bfind.u32 0 =
+// 0xffffffff.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.b32 %r1, 1;
+    brev.b32 %r2, %r1;
+    mov.b64 %rd2, 3;
+    brev.b64 %rd3, %rd2;
+    mov.b32 %r3, 80;
+    bfind.u32 %r4, %r3;
+    bfind.shiftamt.u32 %r5, %r3;
+    mov.b32 %r6, -8;
+    bfind.s32 %r7, %r6;
+    mov.b32 %r8, 0;
+    bfind.u32 %r9, %r8;
+    st.global.u32 [%rd1], %r2;
+    mov.b64 {%r10, %r11}, %rd3;
+    st.global.v2.u32 [%rd1+8], {%r10, %r11};
+    st.global.v4.u32 [%rd1+16], {%r4, %r5, %r7, %r9};
+    ret;
+}

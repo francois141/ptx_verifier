@@ -229,3 +229,12 @@ nvcc compares floats against special values on their bits: `setp.eq.b32 x, 0xFF8
 float operation, the comparison constant is read as a float of the same width and the mask as
 `|x|`: bit equality is value equality except for NaN (outside the model) and the two zeros, which
 the reals identify. Test: `float_bit_comparisons` (also `(a + b) == bits(1.0)` is `(a + b) == 1`).
+
+### vote.sync, brev, bfind
+
+`vote.sync` (PTX ISA 9.7.13.6) runs as a warp collective over its member mask: `.ballot`
+sets bit `i` for mask lane `i` whose predicate (optionally `!`-negated) holds, `.all`/`.any`/`.uni`
+reduce the members' predicates; an exited mask lane is an error, since every mask lane must
+execute it. `brev` and `bfind{.shiftamt}` (signed operands search for the first bit unlike the
+sign; no such bit gives `0xffffffff`) fold concrete words and reject symbolic ones. Tests:
+`vote_sync_modes`, `vote_sync_with_an_exited_mask_lane`, `brev_bfind`.

@@ -2591,3 +2591,33 @@ fn test_mbarrier_skip_wait() {
             .contains(&volta_graph::Assumption::OneShotMbarrierWaitNotComplete)
     );
 }
+
+/// `vote.sync` ballot (full and partial mask, negated source), any, all and uni.
+#[test]
+fn test_vote_sync_modes() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 32 * 8,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/vote_sync_modes", config);
+}
+
+/// `brev` and `bfind` (plain, `.shiftamt`, signed, no bit found) on concrete words.
+#[test]
+fn test_brev_bfind() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 8,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/brev_bfind", config);
+}

@@ -1,0 +1,25 @@
+// Lane 31 exits, then the other lanes vote with a full mask: every mask lane must execute
+// vote.sync (PTX ISA 9.7.13.6), so Volta rejects the run instead of counting lane 31 as false.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 31;
+    @%p1 exit;
+    setp.lt.u32 %p2, %r1, 8;
+    vote.sync.ballot.b32 %r2, %p2, -1;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r2;
+    ret;
+}

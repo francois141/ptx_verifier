@@ -153,7 +153,7 @@ inf±finite, inf·nonzero), undefined forms (inf−inf, 0·inf - integer or
 real zero alike - anything/0) build unfolded nodes. A comparison folds against an infinity when the other side is provably finite,
 and against zero when it is provably positive and finite (an exponential of a finite value,
 a positive constant, or a sum, product, `max` or `|x|` of such: a softmax denominator's
-`sum == 0`); `and`/`or` fold a constant operand.
+`sum == 0`); `and`/`or`/`not` fold a constant operand.
 
 - **Atoms**: `IntConst`, `RealConst(Real)`, `BoolConst`, `Symbol(SymbolId)`, `ParamSymbol(StringId)`, `InputElement { array, index }`, `Undefined`
 - Symbol identity is typed (`SymbolRef`: `Param`/`Element`/`Machine`,
@@ -377,6 +377,7 @@ instruction family, each file depending only on `context` and `error`:
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it). A wait outside those windows is a one-shot test, `MbarrierWaitOnce` (CUTLASS's skip-wait, its result `selp`'d to choose a later blocking wait): it records the mbarrier effect and returns false, never acquiring (PTX ISA 9.7.13.15.16: the acquire pattern forms only on True), and adds `Assumption::OneShotMbarrierWaitNotComplete` to the run's provenance (`GraphBuilder::assume`); a thread repeating one on an unchanged phase 64 times is spinning, `EvalError::OneShotMbarrierWaitSpins`
 - An immediate `mbarrier.init`/`mbarrier.arrive` count outside `ir::MBARRIER_COUNT_RANGE` (`[1, 2^20 - 1]`) is a lowering error; a register one aborts the run (`EvalError::MbarrierCountOutOfRange`)
 - Every thread-issued mbarrier operation (`arrive`, `expect_tx`, `complete_tx`, the parity wait, `tcgen05.commit`, `cp.async.mbarrier.arrive`, a TMA's `[mbar]`) is an `OrderingKind::Mbarrier` effect on the object's 8 bytes: two commute, but each is a write for every ordinary effect. `mbarrier.inval` (`LoweredInstr::MbarrierInval`) ends the live object and is an ordinary 8-byte write, so the memory-conflict check requires every operation on the object, and its `init`, to happen before it and before any reuse of its bytes
+- `vote.sync.{all,any,uni,ballot}` is a warp collective like `shfl.sync` (every mask lane must execute it; an exited mask lane is `EvalError::WarpMismatch`); `brev` and `bfind{.shiftamt}` fold concrete words and reject symbolic ones (CUTLASS's grouped-GEMM scheduler)
 - `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
 - `lower/scopes.rs` renames each `.reg` declared in a nested `{}` block whose name another declaration already uses (`name#k`), with its uses in the block, before declarations are collected: PTX block scoping over the flat register table
 - Three-input `min.f32`/`max.f32` (sm_100) lower to two `BinOp`s; a TMA store may carry `.L2::cache_hint` (its policy operand changes no data)

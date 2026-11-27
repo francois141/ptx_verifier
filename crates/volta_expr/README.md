@@ -109,5 +109,5 @@ Lean challenge generation lives in [`volta_lean`](../backend/volta_lean/README.m
 Comparisons fold when one side is an infinite constant and the other provably finite, or one
 side is zero and the other provably positive and finite (`exp` of a finite value, a positive
 constant, sums, products, `max` and `|x|` of such). Kernels guard softmax denominators this way
-(`sum == 0 ? inf : log(sum)`, FlashMLA's combine); `and`/`or` fold a constant operand, so such
-guards disappear. Covered by `volta_pipeline`'s `float_bit_comparisons` fixture.
+(`sum == 0 ? inf : log(sum)`, FlashMLA's combine); `and`/`or`/`not` fold a constant operand, so
+such guards disappear. Covered by `volta_pipeline`'s `float_bit_comparisons` fixture.

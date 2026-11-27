@@ -164,6 +164,13 @@ pub enum UnaryOp {
     Not,
     /// Population count: the number of set bits.
     Popc,
+    /// Bit reversal (`brev.{b32,b64}`); concrete operands only.
+    Brev,
+    /// `bfind`: the most significant set (unsigned) or non-sign (signed) bit's position, or
+    /// `0xffffffff` if none; concrete operands only.
+    Bfind,
+    /// `bfind.shiftamt`: that bit's left-shift amount (`width - 1 - position`) instead.
+    BfindShiftAmt,
     // Floating-point
     Rcp,
     Sqrt,
@@ -643,6 +650,17 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
+    /// `vote.sync.{all,any,uni,ballot} d, {!}a, membermask` (PTX ISA 9.7.13.6): every mask lane
+    /// executes it together; `.ballot` sets bit `i` of `d` for mask lane `i` whose predicate
+    /// holds, the others reduce the members' predicates to one predicate.
+    VoteSync {
+        mode: crate::frontend::ast::VoteMode,
+        dst: RegId,
+        src: Operand,
+        negated: bool,
+        membermask: Operand,
+    },
+
     // =========================================================================
     // Tensor Core
     // =========================================================================
@@ -1113,6 +1131,7 @@ define_instr_kinds!(
     CpAsyncMbarrierArrive,
     ShflSync,
     ElectSync,
+    VoteSync,
     Ldmatrix,
     Movmatrix,
     Mma,

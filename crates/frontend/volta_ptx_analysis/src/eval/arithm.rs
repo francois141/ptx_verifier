@@ -396,7 +396,10 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<ExprId> {
         // Re-read the operand as `ty` (signed width, float bits decoded) -
         // except for `not`, a pure bit operation.
-        let a = if matches!(op, UnaryOp::Not | UnaryOp::Popc) {
+        let a = if matches!(
+            op,
+            UnaryOp::Not | UnaryOp::Popc | UnaryOp::Brev | UnaryOp::Bfind | UnaryOp::BfindShiftAmt
+        ) {
             a
         } else {
             self.canon_operand(pc, ty, a)?
@@ -431,6 +434,45 @@ impl<'p> Interpreter<'p> {
                 }
             }
             UnaryOp::Popc => self.arena.popc(expr_type(ty), a),
+            UnaryOp::Brev => {
+                let bits = ty.bits().min(64);
+                let Some(c) = self.arena.as_i64(a) else {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: "brev of a symbolic value (no bit-reversal expression)".to_string(),
+                    });
+                };
+                let reversed = (c as u64).reverse_bits() >> (64 - bits);
+                self.arena.int(canon_int(reversed as i64, bits, false))
+            }
+            UnaryOp::Bfind | UnaryOp::BfindShiftAmt => {
+                let bits = ty.bits().min(64);
+                let Some(c) = self.arena.as_i64(a) else {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: "bfind of a symbolic value".to_string(),
+                    });
+                };
+                let word = mask_to(c, bits);
+                // PTX ISA 9.7.1.15: a signed operand's search is for the first bit unlike its sign.
+                let sign = ty.is_signed_int() && (word >> (bits - 1)) & 1 == 1;
+                let searched = if sign {
+                    !word & mask_to(-1, bits)
+                } else {
+                    word
+                };
+                let r = if searched == 0 {
+                    0xffff_ffff
+                } else {
+                    let position = 63 - u64::from(searched.leading_zeros());
+                    if op == UnaryOp::BfindShiftAmt {
+                        u64::from(bits) - 1 - position
+                    } else {
+                        position
+                    }
+                };
+                self.arena.int(r as i64)
+            }
             UnaryOp::Rcp => self.arena.rcp(expr_type(ty), a),
             UnaryOp::Sqrt => self.arena.sqrt(expr_type(ty), a),
             UnaryOp::Rsqrt => self.arena.rsqrt(expr_type(ty), a),
