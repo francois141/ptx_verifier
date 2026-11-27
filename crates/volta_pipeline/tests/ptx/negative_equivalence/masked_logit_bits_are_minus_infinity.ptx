@@ -1,0 +1,21 @@
+// A masked logit stored as raw bits (TensorRT-LLM's scalar logits-bitmask path: mov.b32 of
+// 0xff800000, st.global.b32) into an f32 output reads back as -inf, which equals a spec's -inf
+// (an empty max) though canon's rationals carry no infinity.
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.b32 %r1, -8388608;
+    st.global.b32 [%rd2], %r1;
+    ret;
+}

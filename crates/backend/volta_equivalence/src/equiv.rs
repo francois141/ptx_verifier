@@ -5,7 +5,7 @@
 use crate::canon::{CanonError, CoeffError, Session};
 
 use volta_common::logging::info;
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::{ExprArena, ExprId, ExprNode};
 
 /// Errors from equivalence checking.
 #[derive(Debug)]
@@ -72,6 +72,18 @@ impl<'a> EquivSession<'a> {
     /// are equivalent over the reals. Coefficients that outgrow i128 leave the pair not shown
     /// equal, as any pair outside the fragment is; the session restarts after one.
     pub fn check(&mut self, e1: ExprId, e2: ExprId) -> EquivResult<bool> {
+        // Canon's rationals carry no infinities: an element that is an infinite constant
+        // (a masked logit's -inf) equals only the same constant, and is not shown equal to
+        // anything else (a refutation still needs the numeric oracle).
+        let infinity = |arena: &ExprArena, e: ExprId| match arena.node(e) {
+            ExprNode::RealConst(real) if real.is_infinite() => Some(real.is_pos_inf()),
+            _ => None,
+        };
+        match (infinity(self.arena1, e1), infinity(self.arena2, e2)) {
+            (Some(a), Some(b)) => return Ok(a == b),
+            (Some(_), None) | (None, Some(_)) => return Ok(false),
+            (None, None) => {}
+        }
         if self.recycle_terms != 0 && self.session.interned_terms() > self.recycle_terms {
             info!(
                 "recycling VC session at {} interned terms",

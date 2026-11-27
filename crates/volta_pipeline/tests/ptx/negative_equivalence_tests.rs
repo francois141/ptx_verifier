@@ -656,3 +656,25 @@ fn test_ex2_product_is_not_accurate_expf() {
         }
     );
 }
+
+/// A concrete bit pattern in an f32 output is that float, and -inf equals the spec's -inf.
+#[test]
+fn test_masked_logit_bits_are_minus_infinity() {
+    let mut config = f32_config(1, 1, 1);
+    config.float_arrays = vec![(
+        "out".to_string(),
+        volta_ptx_analysis::frontend::ast::ScalarType::F32,
+    )];
+    let kernel = Kernel {
+        ptx: ptx!(parse "negative_equivalence/masked_logit_bits_are_minus_infinity"),
+        config,
+    };
+    let spec = "dim N; array in[N]; array out[N]; out[i] = max(z in 0..0, in[z]);";
+    assert_eq!(
+        against_spec("masked_logit_bits_are_minus_infinity", &kernel, spec),
+        volta_pipeline::EquivalenceVerdict::Equivalent {
+            checked: 1,
+            total: 1
+        }
+    );
+}

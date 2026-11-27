@@ -437,6 +437,7 @@ racing another thread's use of the object keeps its witness.
 ### Analysis stage (`analysis.rs`, `config.rs`)
 
 - `config.rs` - `AnalysisConfig`: launch dims, the analyzed block `cta` (default (0, 0, 0); `%ctaid`/`%clusterid` read it, and a nonzero one records `Assumption::SingleWorkgroupAnalyzed`), positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
+- `config.rs`'s `float_arrays` records each float-`dtype` array's element type (from the launch file): a concrete bit pattern stored to such an output reads back as that float (TensorRT-LLM's `0xff800000` masked logit)
 - `launch_file.rs` - `LaunchFile::from_json`: the JSON launch file (`volta analyze --config FILE`) to the kernel it names + a validated `AnalysisConfig`; an optional `cluster` must be 1x1x1 (the PTX of a cluster launch need not declare it); arrays by `dtype`/`shape`, auto-laid out on 64 KiB boundaries unless given a `base`; params `{"int"|"float"|"sym"|"ptr": ...}` with an optional reader-only `name`; unknown keys are errors
 - No behavior depends on the module's `.target` directive (recorded in the
   graph's `Provenance` only): every kernel is analyzed and checked as on
@@ -1298,6 +1299,7 @@ from any producer - in memory, from a `.vcdump`, or from `.vexpr` text.
   sums, recorded outside the timed spans, so carrying them is free), `pair_time`
   (the `paired_elements` call), and `verify_time` (the oracle's total
   time, `Some` iff `verify_numeric`).
+- `EquivSession::check` decides an element that is an infinite constant on either side itself (canon's rationals carry no infinity): two equal infinities are equivalent, an infinity against anything else is not shown equal (a masked logit's `-inf`)
 - `check_output_equivalence(ref, opt, arrays)` - the Default-options wrapper
   (all elements, no oracle, one iteration)
 

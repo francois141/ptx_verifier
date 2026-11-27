@@ -652,13 +652,10 @@ BITMASK_SEGMENTS = 12
 PACKED_MANGLED = {16: "6float4", 8: "6float2", 4: "f"}
 
 
-# Volta gap: the canonicalizer refuses the -inf a masked logit becomes ("equivalence check
-# failed: non-finite constant -inf in expression"), so these cases end UNKNOWN. What they still
-# establish: race freedom (a failed graph check would be REJECT) and the exact footprint (the
-# spec's index set is compared before any value, so a missed or extra write is REJECT, as the
-# negative case shows). True verdict, once -inf is canonicalized: ACCEPT.
+# A masked logit is the constant -inf on both sides (equal infinite constants), and the scalar
+# path's 0xff800000 store reads back as the f32 -inf.
 def logits_bitmask(name, batch, vocab, masked, cta, dtype="f32", d2t=None, token_mask=None,
-                   check="UNKNOWN", note=""):
+                   check="ACCEPT", note=""):
     """`invokeContiguousLogitsBitmask(logits, bitmask, tokenMask, d2t, batch, vocab, stride)`
     (logitsBitmask.cu:295): PackedT the widest of float4/float2/float/T dividing the row, then
     numBlocksPerRow = ceil(8 SMs / batch), bits = ceil(vocab / (256 numBlocksPerRow)) picks
@@ -1367,3 +1364,908 @@ _PREQUANT_TAIL = dataclasses.replace(
     per_channel_scale("per_channel_scale_4rows_tail", 4097, 1024, cta=(1024, 0),
                       note=" (rows 4096..4099 of 4097)"), spec=None, dims={}, check="ABORT")
 CASES += _PREQUANTS + (negative(_PREQUANTS[0], {"C1": 1535}, "column 1535 unwritten"), _PREQUANT_TAIL)
+
+
+# ===== Round 3: kernel subdirectories =====
+
+DSV3 = KERNELS + "dsv3MinLatencyKernels/"
+FUSED_A = DSV3 + "dsv3FusedAGemm.cu"
+
+
+# A unit under this directory: `verify.py` reads `survey/TensorRT-LLM/<unit>.ptx`.
+PATCHED = "../../TensorRT-LLM/patched/"
+
+
+def fused_a_gemm(name, hd_in, hd_out, tile_n, tile_m, tokens, cta, patched=None, check="ACCEPT",
+                 note=""):
+    """`invokeFusedAGemm<bf16, hd_in, hd_out, tile_n, tile_m>(out, hidden, weight, tokens)`
+    (dsv3FusedAGemm.cu:648): operands swapped (kernel mat_a = weight [hd_out, hd_in], mat_b =
+    hidden [tokens, hd_in]), tile_k = max(256, 1024 / tile_n), stage_cnt = min(hd_in / tile_k,
+    192 KiB / ((tile_m + tile_n) tile_k 2)), grid (hd_out / tile_m, ceil(tokens / tile_n)),
+    block 256, dynamic smem ((tile_m + tile_n) 2 tile_k stages + barrier bytes) rounded to 1 KiB."""
+    tile_k = max(256, 1024 // tile_n)
+    k_iters = hd_in // tile_k
+    stages = min(k_iters, 1024 * 192 // ((tile_m + tile_n) * tile_k * 2))
+    barrier = (stages * 16 + 1023) // 1024 * 1024
+    smem = ((tile_m * 2 + tile_n * 2) * tile_k * stages + barrier + 1023) // 1024 * 1024
+    bx, by = cta
+    return Case(
+        name=name,
+        description=f"fused_a_gemm_kernel<{hd_out}, {hd_in}, tile {tile_m} x {tile_n} x {tile_k}, "
+                    f"{stages} stages>, {tokens} tokens, {k_iters} k-iterations (ring wraps "
+                    f"{k_iters / stages:.2f}x), block {cta}{note}",
+        source=f"{FUSED_A}:577 (fused_a_gemm_kernel), host invokeFusedAGemm :648 (launch :673)"
+               + (f", PTX patched ({PATCHED}dsv3FusedAGemm_{patched}.ptx)" if patched else ""),
+        unit=f"{PATCHED}dsv3FusedAGemm_{patched}.cu" if patched else FUSED_A,
+        symbol=f"19fused_a_gemm_kernelILi1ELi{hd_out}ELi{hd_in}ELi{tile_m}ELi{tile_n}ELi{tile_k}"
+               f"ELi{stages}EE",
+        args=(Ptr("out"), Ptr("w"), Ptr("x"), Int(tokens, "gemm_n")),
+        arrays=(Array("w", "in", "bf16", (hd_out, hd_in)), Array("x", "in", "bf16", (tokens, hd_in)),
+                Array("out", "out", "bf16", (tokens, hd_out))),
+        grid=(hd_out // tile_m, -(-tokens // tile_n), 1),
+        block=256,
+        check=check,
+        spec="fused_a_gemm.spec",
+        dims={"M": hd_out, "K": hd_in, "N": tokens, "M0": tile_m * bx, "M1": tile_m * bx + tile_m,
+              "N0": tile_n * by, "N1": min(tokens, tile_n * by + tile_n)},
+        cta=(bx, by, 0),
+        smem=smem,
+    )
+
+
+# Volta finding (REJECT, every instantiation): MmaComputer's `::arrive_barrier` (:472) is not
+# the namespaced one (:133) but cudaUtils.h:1189's (found through the file-scope `using namespace
+# tensorrt_llm::common`, :28), which passes a generic pointer to `mbarrier.arrive.shared.b64 _,
+# [%rd19]` after `cvta.shared.u64 %rd22, %rd21` (dsv3FusedAGemm.ptx:727): "t128: out-of-bounds
+# Shared access at 0x6000000000000008 (width 8)". PTX ISA 9.7.13.15.13: an addr outside the
+# .shared::cta window is undefined behavior (it works on hardware whose generic shared window
+# base has zero low 32 bits). `_shared_arrive` patches the four cvta's into movs; then Volta finds
+# that all 32 lanes of warp 4 run every mbarrier.init (:612-:618): "t129: mbarrier.init of the
+# live mbarrier object at Shared[0x0] ... mbarrier.inval must run first" (ISA 9.7.13.15.9: init
+# of a valid mbarrier object is undefined). `_fixed` also guards the init by tid 128: ACCEPT.
+_FUSED_A = (
+    fused_a_gemm("fused_a_gemm_dsv3_n8_3tok", 7168, 2112, 8, 16, 3, cta=(131, 0), check="REJECT",
+                 note=" (last block, 3 of 8 token rows)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n8_3tok_shared_arrive", 7168, 2112, 8, 16, 3, cta=(131, 0),
+                 patched="shared_arrive", check="REJECT", note=" (last block, 3 of 8 token rows)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n8_3tok_fixed", 7168, 2112, 8, 16, 3, cta=(131, 0), patched="fixed",
+                 note=" (last block, 3 of 8 token rows)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n16_16tok_fixed", 7168, 2112, 16, 16, 16, cta=(0, 0), patched="fixed",
+                 note=" (all 16 token rows)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n16_9tok_fixed", 7168, 2112, 16, 16, 9, cta=(131, 0), patched="fixed",
+                 note=" (9 tokens: the smallest on tile_n 16)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n16_1tok_fixed", 7168, 2112, 16, 16, 1, cta=(50, 0), patched="fixed",
+                 note=" (1 token on tile_n 16: not a host launch, the op takes tile_n 8)"),
+    fused_a_gemm("fused_a_gemm_glm_n8_5tok_fixed", 6144, 2624, 8, 32, 5, cta=(81, 0), patched="fixed",
+                 note=" (tile_m 32, last block)"),
+    fused_a_gemm("fused_a_gemm_glm_n16_11tok_fixed", 6144, 2624, 16, 32, 11, cta=(3, 0), patched="fixed",
+                 note=" (tile_m 32)"),
+    fused_a_gemm("fused_a_gemm_dsv3_n16_16tok", 7168, 2112, 16, 16, 16, cta=(0, 0), check="REJECT"),
+    fused_a_gemm("fused_a_gemm_glm_n8_5tok", 6144, 2624, 8, 32, 5, cta=(81, 0), check="REJECT"),
+    fused_a_gemm("fused_a_gemm_glm_n16_11tok_shared_arrive", 6144, 2624, 16, 32, 11, cta=(3, 0),
+                 patched="shared_arrive", check="REJECT", note=" (tile_m 32)"),
+    # Not a host launch (dsv3FusedAGemmOp.cpp:71 takes tile_n 16 past 8 tokens, so grid y is 1):
+    # UNKNOWN, "t96: out-of-bounds Global access at 0x1d1d800 (width 16)", x row 13 of 13. With
+    # grid y 2 the B loader's predicate (:294) and the store's (:547) compare the tile-local row
+    # with gemm_n, so block y 1 reads x rows 13..15 and would store out rows 13..15. A contract
+    # edge of invokeFusedAGemm (its grid allows ceil(tokens / tile_n) > 1, :669), unreachable.
+    fused_a_gemm("fused_a_gemm_dsv3_n8_13tok_fixed", 7168, 2112, 8, 16, 13, cta=(7, 1), patched="fixed",
+                 check="UNKNOWN", note=" (second token tile, rows 8..12: not a host launch)"),
+)
+CASES += _FUSED_A + (negative(_FUSED_A[7], {"N1": 10}, "10 token rows"),
+                     negative(_FUSED_A[6], {"M0": 2591}, "weight row 2591 too"))
+
+
+ROUTER = DSV3 + "dsv3RouterGemm.cu"
+
+
+def router_gemm(name, tokens, experts, hidden, cta, mma=False, check="ACCEPT", note=""):
+    """`invokeRouterGemm<bf16, tokens, experts, hidden>(out, a, w)` (dsv3RouterGemm.cu:174): grid
+    experts, block 128, VPT 8, one expert per block; `mma`: `invokeRouterGemmMma` (:367), grid
+    experts / 8, block 448 (14 warps splitting K), 8 experts per block."""
+    per = 8 if mma else 1
+    if mma:
+        symbol = f"22router_gemm_mma_kernelILi{tokens}ELi{experts}ELi{hidden}ELi8ELi448EE"
+    else:
+        symbol = f"18router_gemm_kernelI13__nv_bfloat16Li128ELi8ELi{tokens}ELi{experts}ELi{hidden}EE"
+    return Case(
+        name=name,
+        description=f"{'router_gemm_mma_kernel' if mma else 'router_gemm_kernel'}, {tokens} tokens x "
+                    f"{experts} experts x {hidden}, block {cta} = experts [{per * cta}, {per * cta + per}){note}",
+        source=f"{ROUTER}:{366 if mma else 53}, host {'invokeRouterGemmMma :367' if mma else 'invokeRouterGemm :174'}",
+        unit=ROUTER,
+        symbol=symbol,
+        args=(Ptr("out"), Ptr("a"), Ptr("w")),
+        arrays=(Array("a", "in", "bf16", (tokens, hidden)), Array("w", "in", "bf16", (experts, hidden)),
+                Array("out", "out", "f32", (tokens, experts))),
+        grid=(experts // per, 1, 1),
+        block=448 if mma else 128,
+        check=check,
+        spec="router_gemm.spec",
+        dims={"T": tokens, "E": experts, "K": hidden, "N0": per * cta, "N1": per * cta + per, "M0": 0, "M1": tokens},
+        cta=(cta, 0, 0),
+    )
+
+
+def router_latent_gemm(name, tokens, cta, check="ACCEPT", note=""):
+    """`invokeRouterLatentGemmMma<tokens>(logits, projection, input, gate, down)` (dsv3RouterGemm.cu:392):
+    columns 896 gate + 3584 latent, 8 per block, grid 560, block 448."""
+    e, lat, k = 896, 3584, 7168
+    return Case(
+        name=name,
+        description=f"router_latent_gemm_mma_kernel<{tokens}>, columns [{8 * cta}, {8 * cta + 8}) of "
+                    f"{e} gate + {lat} latent{note}",
+        source=f"{ROUTER}:358 (router_latent_gemm_mma_kernel), host invokeRouterLatentGemmMma :392",
+        unit=ROUTER,
+        symbol=f"29router_latent_gemm_mma_kernelILi{tokens}EE",
+        args=(Ptr("logits"), Ptr("proj"), Ptr("a"), Ptr("gate"), Ptr("down")),
+        arrays=(Array("a", "in", "bf16", (tokens, k)), Array("gate", "in", "bf16", (e, k)),
+                Array("down", "in", "bf16", (lat, k)), Array("logits", "out", "f32", (tokens, e)),
+                Array("proj", "out", "bf16", (tokens, lat))),
+        grid=((e + lat) // 8, 1, 1),
+        block=448,
+        check=check,
+        spec="router_latent_gemm.spec",
+        dims={"T": tokens, "E": e, "L": lat, "K": k, "C0": 8 * cta, "C1": 8 * cta + 8},
+        cta=(cta, 0, 0),
+    )
+
+
+_ROUTERS = (
+    router_gemm("router_gemm_dsv3_1tok", 1, 256, 7168, cta=255),
+    router_gemm("router_gemm_dsv3_16tok", 16, 256, 7168, cta=17),
+    router_gemm("router_gemm_glm_7tok", 7, 256, 6144, cta=100),
+    router_gemm("router_gemm_dsv4_288_5tok", 5, 288, 4096, cta=287),
+    router_gemm("router_gemm_dsv41_384_3tok", 3, 384, 5120, cta=200),
+    router_gemm("router_gemm_mma_k3_1tok", 1, 896, 7168, cta=111, mma=True, note=" (last block)"),
+    router_gemm("router_gemm_mma_k3_9tok", 9, 896, 7168, cta=5, mma=True, note=" (two m-rows, 1 of row 2)"),
+    router_gemm("router_gemm_mma_k3_16tok", 16, 896, 7168, cta=0, mma=True),
+    router_latent_gemm("router_latent_gemm_3tok_gate", 3, cta=111, note=" (last gate block)"),
+    router_latent_gemm("router_latent_gemm_3tok_latent", 3, cta=112, note=" (first latent block)"),
+    router_latent_gemm("router_latent_gemm_12tok_latent", 12, cta=559, note=" (last block)"),
+)
+CASES += _ROUTERS + (negative(_ROUTERS[1], {"N0": 18, "N1": 19}, "expert 18"),
+                     negative(_ROUTERS[9], {"C0": 904, "C1": 912}, "the next block's columns"))
+
+
+# ===== Mamba causal conv1d (causalConv1d/causalConv1d.cu) =====
+
+CONV = KERNELS + "causalConv1d/causalConv1d.cu"
+CONV_MANGLED = {"f32": "ff", "f16": "6__halfS5_", "bf16": "13__nv_bfloat16S5_"}
+# ConvParamsBase (causalConv1d.h:60) in declaration order, (name, size); alignment = size.
+CONV_FIELDS = [*[(n, 4) for n in "batch dim seqlen width".split()], ("pad_slot_id", 8), ("silu_activation", 1),
+               *[(n, 4) for n in ("x_batch_stride x_c_stride x_l_stride weight_c_stride weight_width_stride "
+                                  "out_batch_stride out_c_stride out_l_stride conv_state_len "
+                                  "conv_state_batch_stride conv_state_c_stride conv_state_l_stride").split()],
+               *[(n, 8) for n in ("x_ptr weight_ptr bias_ptr out_ptr conv_state_ptr query_start_loc_ptr "
+                                  "has_initial_state_ptr cache_indices_ptr cache_seqlens "
+                                  "conv_state_indices_ptr seq_idx_ptr initial_states_ptr").split()],
+               *[(n, 4) for n in "initial_states_batch_stride initial_states_l_stride initial_states_c_stride".split()],
+               ("final_states_ptr", 8),
+               *[(n, 4) for n in "final_states_batch_stride final_states_l_stride final_states_c_stride".split()],
+               ("conv_states_ptr", 8),
+               *[(n, 4) for n in "conv_states_batch_stride conv_states_l_stride conv_states_c_stride".split()]]
+
+
+def _layout(fields):
+    offsets, at = {}, 0
+    for name, size in fields:
+        at = -(-at // size) * size
+        offsets[name] = (at, size)
+        at += size
+    return offsets, -(-at // 8) * 8
+
+
+CONV_OFFSETS, CONV_SIZE = _layout(CONV_FIELDS)
+assert CONV_SIZE == 240  # `.param .align 8 .b8 ..._param_0[240]` in causalConv1d.ptx
+assert CONV_OFFSETS["conv_state_indices_ptr"][0] == 152 and CONV_OFFSETS["x_ptr"][0] == 80  # sl1's loads
+
+
+def conv_params(values, pointers):
+    """A ConvParamsBase: `values` ints by field (others 0), `pointers` array names by field (others null)."""
+    fields = []
+    for name, (offset, size) in CONV_OFFSETS.items():
+        if name in pointers:
+            fields.append({"offset": offset, "ptr": pointers[name]})
+        else:
+            kind = {1: "u8", 4: "u32", 8: "u64"}[size]
+            v = values.get(name, 0)
+            fields.append({"offset": offset, kind: v & ((1 << (8 * size)) - 1)})
+    return Struct(tuple(fields), "params")
+
+
+def conv1d_update(name, batch, dim, seqlen, width, state_len, cta, slots=None, seqlens=None, silu=True,
+                  bias=True, pad=-1, dtype="bf16", check="ACCEPT", note=""):
+    """`causalConv1dUpdate(x, conv_state, weight, bias, silu, cache_seqlens, conv_state_indices, pad)`
+    (causalConv1dOp.cpp:346): out = x (in place), x [B, D, L], weight [D, W], state [S, D, SL], all
+    contiguous; `causal_conv1d_update_launch<128, W>` (causalConv1d.cu:1305): grid (B, ceil(D / 128)),
+    block 128, the _sl1 kernel when L == 1, no cache_seqlens, silu and SL == W - 1 (:1313). `slots`
+    are conv_state_indices, `seqlens` cache_seqlens (the circular ring). Block `cta` = (batch, y)."""
+    b, by = cta
+    circular = seqlens is not None
+    sl1 = seqlen == 1 and not circular and silu and state_len == width - 1
+    n_slots = max(slots) + 1 if slots else batch
+    slot = slots[b] if slots else b
+    c0, c1 = 128 * by, min(dim, 128 * by + 128)
+    pointers = {"x_ptr": "x", "weight_ptr": "w", "out_ptr": "x", "conv_state_ptr": "state"}
+    if bias:
+        pointers["bias_ptr"] = "bias"
+    if slots:
+        pointers["conv_state_indices_ptr"] = "slots"
+    if circular:
+        pointers["cache_seqlens"] = "seqlens"
+    values = {"batch": batch, "dim": dim, "seqlen": seqlen, "width": width, "pad_slot_id": pad,
+              "silu_activation": int(silu), "x_batch_stride": dim * seqlen, "x_c_stride": seqlen,
+              "x_l_stride": 1, "weight_c_stride": width, "weight_width_stride": 1,
+              "out_batch_stride": dim * seqlen, "out_c_stride": seqlen, "out_l_stride": 1,
+              "conv_state_len": state_len, "conv_state_batch_stride": dim * state_len,
+              "conv_state_c_stride": state_len, "conv_state_l_stride": 1}
+    arrays = [Array("w", "in", dtype, (dim, width)), Array("bias", "in", dtype, (dim,))]
+    if slots:
+        arrays.append(Array("slots", "index", "i32", (batch,), contents=tuple(slots)))
+    if circular:
+        arrays.append(Array("seqlens", "index", "i32", (batch,), contents=tuple(seqlens)))
+    arrays += [Array("x", "inout", dtype, (batch, dim, seqlen)),
+               Array("state", "inout", dtype, (n_slots, dim, state_len))]
+    dims = {"B": batch, "D": dim, "L": seqlen, "W": width, "NS": n_slots, "SL": state_len, "BI": b,
+            "SLOT": slot, "C0": c0, "C1": c1, "SILU": int(silu)}
+    if circular:
+        cs = seqlens[b] % state_len
+        upd = (cs - (width - 1)) % state_len
+        ps = [(upd + i) % state_len for i in range(width - 1)] + [0] * (4 - width)
+        dims.update({f"P{i}": p for i, p in enumerate(ps)})
+        last = {}
+        for i in range(seqlen):
+            last[(cs + i) % state_len] = i
+        qs = sorted(last.items()) + [(state_len, 0)] * (4 - len(last))
+        assert len(qs) == 4
+        for k, (q, i) in enumerate(qs):
+            dims.update({f"Q{k}": q, f"I{k}": i})
+    else:
+        dims["BIAS"] = int(bias)
+    skipped = slots is not None and slot == pad
+    if sl1:
+        symbol = (f"31causal_conv1d_update_kernel_sl1INS2_34Causal_conv1d_update_kernel_traitsILi128ELi{width}E"
+                  f"{CONV_MANGLED[dtype]}EELb{int(bool(slots))}EE")
+    else:
+        symbol = (f"27causal_conv1d_update_kernelINS2_34Causal_conv1d_update_kernel_traitsILi128ELi{width}E"
+                  f"{CONV_MANGLED[dtype]}EELb{int(circular)}ELb{int(bool(slots))}ELb{int(silu)}EE")
+    return Case(
+        name=name,
+        description=f"causal_conv1d_update_kernel{'_sl1' if sl1 else ''}<{dtype}, width {width}>, batch {batch} "
+                    f"x dim {dim} x {seqlen} tokens, state {state_len}{', circular ' + str(seqlens) if circular else ''}"
+                    f"{', slots ' + str(slots) if slots else ''}{'' if silu else ', no silu'}"
+                    f"{'' if bias else ', no bias'}, block {cta} = channels [{c0}, {c1}){note}",
+        source=f"{CONV}:{1248 if sl1 else 1127}, host causal_conv1d_update_launch :1305 from "
+               f"causalConv1dOp.cpp:346",
+        unit=CONV,
+        symbol=symbol,
+        args=(conv_params(values, pointers),),
+        arrays=tuple(arrays),
+        grid=(batch, -(-dim // 128), 1),
+        block=128,
+        check="VERIFIED" if skipped else check,
+        spec=None if skipped else "conv1d_update_circular.spec" if circular else "conv1d_update.spec",
+        dims={} if skipped else dims,
+        cta=(b, by, 0),
+    )
+
+
+_CONV_UPDATES = (
+    # Mamba2 decode: width 4, state 3, one token: the _sl1 fast path.
+    conv1d_update("conv1d_update_sl1_bf16", 2, 256, 1, 4, 3, cta=(1, 1)),
+    conv1d_update("conv1d_update_sl1_slots_f16", 3, 200, 1, 4, 3, cta=(2, 1), slots=(4, 0, 2), dtype="f16",
+                  note=" (channels 128..200: 72 of 128 threads)"),
+    conv1d_update("conv1d_update_sl1_pad_slot", 3, 200, 1, 4, 3, cta=(1, 0), slots=(4, -1, 2),
+                  note=" (padded entry: nothing written)"),
+    # Volta gap (UNKNOWN, true verdict ACCEPT): the general kernel's silu calls the accurate expf
+    # (:1219), range-reduced (`fma.rm.f32 %r54, %r51, 0f437C0000, 0f4B400001; shl.b32 %r59, %r54, 23;
+    # ex2.approx.ftz.f32 %r60, %r58; fma.rn.f32 %r61, %r60, %r59, 1.0`, causalConv1d.ptx). Its output
+    # reads exp((r c1 + r c2 - n) 8388608 / 12102203) exp(n log 2) with n = min(max(r c3 + 0.5, 0), 1)
+    # 252 + ..., the rounding of fma.rm dropped; of the conv sum r the canonicalizer neither proves
+    # nor refutes it ("not proved equivalent and not refuted"), though it proves expf of a bare input
+    # (state_passing_f16_3chunks). The no-silu twins check the same paths.
+    conv1d_update("conv1d_update_mtp_bf16", 2, 128, 3, 4, 6, cta=(1, 0), check="UNKNOWN",
+                  note=" (3 draft tokens, state 6 shifted by 3)"),
+    conv1d_update("conv1d_update_mtp_bf16_nosilu", 2, 128, 3, 4, 6, cta=(1, 0), silu=False,
+                  note=" (3 draft tokens, state 6 shifted by 3)"),
+    conv1d_update("conv1d_update_long_f32", 1, 130, 5, 3, 3, cta=(0, 1), dtype="f32", silu=False,
+                  note=" (5 tokens > state 3, no silu, 2 channels)"),
+    conv1d_update("conv1d_update_w2_nobias_bf16", 2, 64, 2, 2, 4, cta=(0, 0), bias=False, silu=False,
+                  note=" (width 2, no bias)"),
+    conv1d_update("conv1d_update_circular_bf16", 2, 128, 2, 4, 5, cta=(1, 0), seqlens=(3, 9), silu=False,
+                  note=" (ring wraps: writes at 4, 0)"),
+    conv1d_update("conv1d_update_circular_slots_f16", 2, 128, 3, 3, 4, cta=(0, 0), seqlens=(6, 1),
+                  slots=(1, 0), dtype="f16", silu=False),
+    conv1d_update("conv1d_update_circular_wrap_f32", 1, 64, 6, 2, 4, cta=(0, 0), seqlens=(2,), dtype="f32",
+                  silu=False, note=" (6 tokens around a ring of 4: positions rewritten)"),
+)
+CASES += _CONV_UPDATES + (negative(_CONV_UPDATES[0], {"SLOT": 0}, "state of slot 0"),
+                          negative(_CONV_UPDATES[7], {"P0": 0}, "window from ring position 0"),
+                          negative(_CONV_UPDATES[5], {"BIAS": 0}, "no bias"))
+
+
+def conv1d_fwd(name, lens, dim, width, cta, varlen=False, states=True, init=None, slots=None, silu=True,
+               pad=-1, dtype="f32", check="ACCEPT", note=""):
+    """`causalConv1dFwd(x, weight, bias, conv_states, query_start_loc, cache_indices, has_initial_state,
+    silu, pad, out)` (causalConv1dOp.cpp:201) with a separate `out` of x's layout, on the channel-major
+    kernel (token stride 1, :311): `causal_conv1d_fwd_launch<128, 4, W>` (causalConv1d.cu:453), grid
+    (batch, ceil(dim / 4)), block 128, a warp per channel, chunks of 32 x kNElts x 4 tokens. Padded:
+    x [B, D, L]; `varlen`: x [D, total] (one row of query_start_loc offsets, strides from x.stride(1)).
+    conv_states [S, D, W - 1]; `init` has_initial_state per sequence; `slots` cache_indices."""
+    b, by = cta
+    batch = len(lens)
+    cu = [0]
+    for n in lens:
+        cu.append(cu[-1] + n)
+    if varlen:
+        nb, ll, xb, s0 = 1, cu[-1], 0, cu[b]
+        strides = {"x_batch_stride": 1, "x_c_stride": ll, "x_l_stride": 1,
+                   "out_batch_stride": 1, "out_c_stride": ll, "out_l_stride": 1}
+    else:
+        assert len(set(lens)) == 1
+        nb, ll, xb, s0 = batch, lens[0], b, 0
+        strides = {"x_batch_stride": dim * ll, "x_c_stride": ll, "x_l_stride": 1,
+                   "out_batch_stride": dim * ll, "out_c_stride": ll, "out_l_stride": 1}
+    n_slots = max(slots) + 1 if slots else batch
+    slot = slots[b] if slots else b
+    c0, c1 = 4 * by, min(dim, 4 * by + 4)
+    pointers = {"x_ptr": "x", "weight_ptr": "w", "bias_ptr": "bias", "out_ptr": "out"}
+    if states:
+        pointers["conv_states_ptr"] = "state"
+    if varlen:
+        pointers["query_start_loc_ptr"] = "qsl"
+    if init:
+        pointers["has_initial_state_ptr"] = "init"
+    if slots:
+        pointers["cache_indices_ptr"] = "slots"
+    values = {"batch": batch, "dim": dim, "seqlen": ll, "width": width, "pad_slot_id": pad,
+              "silu_activation": int(silu), "weight_c_stride": width, "weight_width_stride": 1, **strides,
+              "conv_states_batch_stride": dim * (width - 1), "conv_states_c_stride": width - 1,
+              "conv_states_l_stride": 1}
+    arrays = [Array("w", "in", dtype, (dim, width)), Array("bias", "in", dtype, (dim,))]
+    if varlen:
+        arrays.append(Array("qsl", "index", "i32", (batch + 1,), contents=tuple(cu)))
+    if init:
+        # Volta gap: an index array's `contents` are read only at 4 bytes (interp.rs:2748); a u8
+        # index array's element i is i, silently, and a byte of an i32 word is "unsupported
+        # reinterpretation". has_initial_state (bool) so reads its sequence index: only init[b] ==
+        # (b != 0) states what the run sees.
+        assert bool(init[b]) == (b != 0), "has_initial_state[b] reads as b"
+        arrays.append(Array("init", "index", "u8", (batch,), contents=tuple(int(v) for v in init)))
+    if slots:
+        arrays.append(Array("slots", "index", "i32", (batch,), contents=tuple(slots)))
+    arrays += [Array("x", "in", dtype, (nb, dim, ll)), Array("out", "out", dtype, (nb, dim, ll)),
+               Array("state", "inout", dtype, (n_slots, dim, width - 1))]
+    skipped = slots is not None and slot == pad
+    return Case(
+        name=name,
+        description=f"causal_conv1d_fwd_kernel<{dtype}, 128 threads, 4 passes, width {width}>, "
+                    f"{'varlen ' if varlen else ''}lengths {lens} x dim {dim}"
+                    f"{', conv states' if states else ''}{', initial ' + str(init) if init else ''}"
+                    f"{', slots ' + str(slots) if slots else ''}{'' if silu else ', no silu'}, block {cta} = "
+                    f"channels [{c0}, {c1}){note}",
+        source=f"{CONV}:158 (causal_conv1d_fwd_kernel), host causal_conv1d_fwd_launch :453 from "
+               f"causalConv1dOp.cpp:201",
+        unit=CONV,
+        symbol=f"24causal_conv1d_fwd_kernelINS2_31Causal_conv1d_fwd_kernel_traitsILi128ELi4ELi{width}E"
+               f"{CONV_MANGLED[dtype]}EELb{int(bool(slots))}ELb{int(silu)}EE",
+        args=(conv_params(values, pointers),),
+        arrays=tuple(arrays),
+        grid=(batch, -(-dim // 4), 1),
+        block=128,
+        check="VERIFIED" if skipped else check,
+        spec=None if skipped else "conv1d_fwd.spec",
+        dims={} if skipped else {
+            "NB": nb, "D": dim, "LL": ll, "W": width, "WM1": width - 1, "NS": n_slots, "BI": b, "XB": xb,
+            "S0": s0, "L": lens[b], "SLOT": slot, "C0": c0, "C1": c1, "SILU": int(silu),
+            "INIT": int(bool(init and init[b])), "STATES": int(states)},
+        cta=(b, by, 0),
+    )
+
+
+_CONV_FWDS = (
+    conv1d_fwd("conv1d_fwd_f32_padded", (40, 40), 8, 4, cta=(1, 1)),
+    conv1d_fwd("conv1d_fwd_f32_varlen_init", (5, 23, 2), 6, 4, cta=(1, 1), varlen=True, init=(0, 1, 1),
+               note=" (offset 5: scalar loads, channels 4..6: 2 of 4 warps)"),
+    conv1d_fwd("conv1d_fwd_f32_varlen_short", (2, 23, 5), 6, 4, cta=(0, 0), varlen=True, init=(0, 1, 1),
+               note=" (2 tokens < width - 1: state keeps a zero)"),
+    conv1d_fwd("conv1d_fwd_f32_varlen_short_init", (5, 2, 9), 4, 4, cta=(1, 0), varlen=True, init=(0, 1, 0),
+               note=" (2 tokens: state keeps an initial value)"),
+    conv1d_fwd("conv1d_fwd_f32_two_chunks", (530,), 4, 3, cta=(0, 0), silu=False,
+               note=" (530 tokens: chunk 512 + 18, carry across chunks)"),
+    conv1d_fwd("conv1d_fwd_f32_slots_w2", (7, 3), 5, 2, cta=(0, 1), varlen=True, init=(0, 1), slots=(3, 1)),
+    conv1d_fwd("conv1d_fwd_f32_slots_init_w3", (7, 3), 5, 3, cta=(1, 1), varlen=True, init=(0, 1), slots=(3, 1),
+               note=" (3 tokens from offset 7)"),
+    conv1d_fwd("conv1d_fwd_f32_pad_slot", (7, 3), 5, 2, cta=(1, 0), varlen=True, slots=(3, -1),
+               note=" (padded entry: nothing written)"),
+    conv1d_fwd("conv1d_fwd_f32_empty_seq", (0, 4), 4, 4, cta=(0, 0), varlen=True, init=(0, 1),
+               note=" (empty sequence: state zeroed)"),
+    conv1d_fwd("conv1d_fwd_f32_empty_seq_init", (4, 0), 4, 4, cta=(1, 0), varlen=True, init=(0, 1),
+               note=" (empty sequence with an initial state: nothing written)"),
+)
+# Volta gap (UNKNOWN, true verdict unknown): the 16-bit kernels exchange tail words as u32 pairs
+# (:290-:296), and lane 0's choice between its carry word, the constant 0 of `carry_vals = {0}`,
+# and the shuffled pair (`selp.b32 %r1028, %r1021, %r446, %p113`, causalConv1d.ptx:81720) stops
+# thread 0: "value kind mismatch (packed pair selected against a scalar word)", although the
+# predicate (lane_id == 0) is concrete.
+CASES += _CONV_FWDS + (negative(_CONV_FWDS[1], {"INIT": 0}, "no initial state"),
+    conv1d_fwd("conv1d_fwd_bf16_nosilu", (70,), 4, 4, cta=(0, 0), silu=False, dtype="bf16", check="UNKNOWN"),
+    conv1d_fwd("conv1d_fwd_f16_silu", (70,), 4, 4, cta=(0, 0), dtype="f16", check="UNKNOWN"),
+    conv1d_fwd("conv1d_fwd_f16_nosilu_varlen", (3, 70), 4, 3, cta=(1, 0), varlen=True, init=(0, 1), silu=False,
+               dtype="f16", check="UNKNOWN"),)
+
+
+# ===== Mamba2 MTP SSM cache update (mamba2MTPSSMCache/) =====
+
+MTP_SSM = KERNELS + "mamba2MTPSSMCache/mamba2MTPSSMCacheVec{}.cu"
+MTP_TYPES = {"f32": "ffffE", "bf16": "13__nv_bfloat16S3_S3_S3_E"}
+
+
+def mamba2_mtp(name, batch, steps, heads, head_dim, groups, cta, slots=None, inter_slots=None, has_d=True,
+               has_z=True, bias=True, update=True, n=128, dtype="f32", check="ACCEPT", note=""):
+    """`mamba2_mtp_ssm_cache_update(ssm, x, dt, A, B, C, out, intermediate, D, z, dt_bias, softplus off,
+    ssm_batch_indices, intermediate_indices, no parent tokens, steps, pad -1, !update)`
+    (mamba2MTPSSMCacheOp.cpp:46): dt [B, T, H] broadcast over head_dim (strides (1, 0), :87), A, D and
+    dt_bias per head; `invokeMamba2MTPSSMCacheUpdate` (mamba2MTPSSMCache.cu:40): VEC n / 32, grid
+    (head_dim / 8, heads, batch), block 128, two head dims per warp; strides from
+    launchMamba2MTPSSMCacheKernel (mamba2MTPSSMCacheKernel.cuh:597). Block `cta` = (x, head, batch)."""
+    vec = n // 32
+    bx, hi, bi = cta
+    n_slots = max(slots) + 1 if slots else batch
+    n_inter = max(inter_slots) + 1 if inter_slots else n_slots
+    slot = slots[bi] if slots else bi
+    islot = inter_slots[bi] if inter_slots else slot
+    arrays = [Array("x", "in", dtype, (batch, steps, heads, head_dim)), Array("dt", "in", dtype, (batch, steps, heads)),
+              Array("A", "in", dtype, (heads,)), Array("Bm", "in", dtype, (batch, steps, groups, n)),
+              Array("Cm", "in", dtype, (batch, steps, groups, n)), Array("Dv", "in", dtype, (heads,)),
+              Array("z", "in", dtype, (batch, steps, heads, head_dim)), Array("dt_bias", "in", dtype, (heads,))]
+    if slots:
+        arrays.append(Array("slots", "index", "i32", (batch,), contents=tuple(slots)))
+    if inter_slots:
+        arrays.append(Array("islots", "index", "i32", (batch,), contents=tuple(inter_slots)))
+    arrays += [Array("state", "inout", dtype, (n_slots, heads, head_dim, n)),
+               Array("inter", "out", dtype, (n_inter, steps, heads, head_dim, n)),
+               Array("out", "out", dtype, (batch, steps, heads, head_dim))]
+    flags = f"ILi{vec}ELb{int(has_d)}ELb{int(has_z)}ELb{int(bias)}ELb0ELb0E{MTP_TYPES[dtype]}"
+    return Case(
+        name=name,
+        description=f"mamba2MTPSSMCacheKernel<VEC {vec}, {dtype}{', D' if has_d else ''}{', z' if has_z else ''}"
+                    f"{', dt_bias' if bias else ''}>, batch {batch} x {steps} steps x {heads} heads x {head_dim} x "
+                    f"ssm {n}, {groups} groups{', slots ' + str(slots) if slots else ''}"
+                    f"{', intermediate slots ' + str(inter_slots) if inter_slots else ''}"
+                    f"{'' if update else ', state update disabled'}, block {cta}{note}",
+        source=f"{KERNELS}mamba2MTPSSMCache/mamba2MTPSSMCacheKernel.cuh:290, host invokeMamba2MTPSSMCacheUpdate "
+               f"mamba2MTPSSMCache.cu:40 from mamba2MTPSSMCacheOp.cpp:46",
+        unit=MTP_SSM.format(vec),
+        symbol=("23mamba2MTPSSMCacheKernel", flags),
+        args=(Ptr("state"), Ptr("x"), Ptr("dt"), Ptr("A"), Ptr("Bm"), Ptr("Cm"), Ptr("out"), Ptr("inter"),
+              Ptr("Dv") if has_d else NULL, Ptr("z") if has_z else NULL, Ptr("dt_bias") if bias else NULL,
+              Ptr("slots") if slots else NULL, Ptr("islots") if inter_slots else NULL, NULL,
+              Int(steps, "cache_steps"), Int(int(bool(slots)), "has_ssm_batch_indices"),
+              Int(int(bool(inter_slots)), "has_intermediate_ssm_batch_indices"), Int(-1, "pad_slot_id"),
+              Int(int(not update), "disable_state_update"), Int(heads, "nheads"), Int(head_dim, "head_dim"),
+              Int(n, "ssm_dim"), Int(heads // groups, "heads_groups_ratio"),
+              Int(heads * head_dim * n, "ssm_batch_stride"), Int(heads * head_dim * n, "stride_nheads_hdim_ssm_dim"),
+              Int(head_dim * n, "stride_hdim_ssm_dim"), Int(steps * heads * head_dim, "stride_cache_nheads_hdim"),
+              Int(heads * head_dim, "stride_nheads_hdim"), Int(steps * groups * n, "stride_cache_ngroups_ssm_dim"),
+              Int(groups * n, "stride_ngroups_ssm_dim")),
+        arrays=tuple(arrays),
+        grid=(head_dim // 8, heads, batch),
+        block=128,
+        check=check,
+        spec="mamba2_mtp.spec",
+        dims={"NS": n_slots, "NI": n_inter, "B": batch, "T": steps, "H": heads, "HD": head_dim, "N": n, "G": groups,
+              "RATIO": heads // groups, "GI": hi // (heads // groups), "SLOT": slot, "ISLOT": islot, "BI": bi, "HI": hi, "D0": 8 * bx,
+              "D1": 8 * bx + 8, "BIAS": int(bias), "HASD": int(has_d), "HASZ": int(has_z), "UPDATE": int(update),
+              "TM1": steps - 1},
+        cta=(bx, hi, bi),
+    )
+
+
+_MTPS = (
+    mamba2_mtp("mamba2_mtp_f32_3steps", 2, 3, 2, 16, 1, cta=(1, 1, 1)),
+    mamba2_mtp("mamba2_mtp_f32_slots", 3, 2, 4, 8, 2, cta=(0, 3, 2), slots=(5, 0, 3), inter_slots=(1, 2, 0),
+               note=" (head 3 in group 1)"),
+    mamba2_mtp("mamba2_mtp_f32_plain_no_update", 2, 2, 2, 8, 2, cta=(0, 0, 1), has_d=False, has_z=False, bias=False,
+               update=False),
+    mamba2_mtp("mamba2_mtp_f32_1step_vec8", 1, 1, 1, 8, 1, cta=(0, 0, 0), n=256),
+    mamba2_mtp("mamba2_mtp_f32_2steps_vec16", 1, 2, 1, 8, 1, cta=(0, 0, 0), n=512, has_z=False),
+    mamba2_mtp("mamba2_mtp_bf16_2steps", 2, 2, 2, 16, 1, cta=(1, 0, 1), dtype="bf16"),
+)
+CASES += _MTPS + (negative(_MTPS[0], {"HASD": 0}, "no D skip term"),
+                  negative(_MTPS[1], {"ISLOT": 1}, "intermediate slot 1"))
+
+
+# ===== Mamba2 chunked scan: state passing (selectiveScan/statepassing.h) =====
+
+SSD = KERNELS + "selectiveScan/instantiation/"
+
+
+def state_passing(name, lens, heads, n, p, cta, q=128, slots=None, dtype="f16", check="ACCEPT", note=""):
+    """`state_passing<<<bds[2], tds[2]>>>(B, L, H, P, G, N, Os, Fs, St, dA, removePadding, lastTokenIds,
+    slotMapping)` (selectiveScan.cu:434) with packed tokens (remove_padding): getStatePassingKernel
+    (statepassing.h:226) tile 512, grid (H N P / 512, 1, B), block (32, 4). Sequence b's tokens end at
+    lastTokenIds[b]; its chunks start at ceil(start / Q) + b - 1 (:93). Block `cta` = (x, b)."""
+    assert n * p == 512
+    bx, b = cta
+    ends = [sum(lens[:i + 1]) for i in range(len(lens))]
+    start = ends[b - 1] if b else 0
+    cs = -(-start // q) + b - 1 if b else 0
+    c = -(-lens[b] // q)
+    ct = max((-(-(ends[i - 1] if i else 0) // q) + i - 1 if i else 0) + -(-lens[i] // q) for i in range(len(lens)))
+    n_slots = max(slots) + 1 if slots else len(lens)
+    t = {"f16": "6__half", "bf16": "13__nv_bfloat16"}[dtype]
+    return Case(
+        name=name,
+        description=f"state_passing_kernel<Q {q}, 512, 4, {dtype}>, packed lengths {lens}, {heads} heads x N {n} x "
+                    f"P {p}{', slots ' + str(slots) if slots else ''}, block {cta}: chunks [{cs}, {cs + c}){note}",
+        source=f"{KERNELS}selectiveScan/statepassing.h:48 (state_passing_kernel), host getStatePassingKernel "
+               f":226, launch invokeChunkScan selectiveScan.cu:434",
+        unit=SSD + f"statepassing_{'fp16' if dtype == 'f16' else 'bf16'}.cu",
+        symbol=f"20state_passing_kernelILi{q}ELi512ELi4E{t}E",
+        args=(Int(len(lens), "B"), Int(max(lens), "L"), Int(heads, "H"), Int(p, "P"), Int(1, "G"), Int(n, "N"),
+              Ptr("Os"), Ptr("Fs"), Ptr("St"), Ptr("dA"), Int(1, "removePadding"), Ptr("ends"),
+              Ptr("slots") if slots else NULL),
+        arrays=(Array("ends", "index", "i32", (len(lens),), contents=tuple(ends)),
+                *((Array("slots", "index", "i32", (len(lens),), contents=tuple(slots)),) if slots else ()),
+                Array("St", "in", "f32", (ct, heads, n * p)), Array("dA", "in", "f32", (ct, heads, q)),
+                Array("Os", "out", dtype, (ct, heads, n * p)), Array("Fs", "out", dtype, (n_slots, heads, n * p))),
+        grid=(heads * n * p // 512, 1, len(lens)),
+        block=(32, 4, 1),
+        check=check,
+        spec="state_passing.spec",
+        dims={"CT": ct, "H": heads, "E": n * p, "Q": q, "QM1": q - 1, "NS": n_slots, "CS": cs, "C": c, "HI": bx,
+              "SLOT": slots[b] if slots else b},
+        cta=(bx, 0, b),
+    )
+
+
+_STATE_PASSINGS = (
+    state_passing("state_passing_f16_1chunk", (100, 60), 2, 16, 32, cta=(1, 1), slots=(3, 0)),
+    # The chunk scale is the accurate expf(dA) (:166, range-reduced through `fma.rm.f32`, `shl.b32
+    # 23` and `ex2.approx.ftz.f32`): of an input element Volta proves it (contrast conv1d_update_mtp).
+    state_passing("state_passing_f16_3chunks", (300, 60), 2, 16, 32, cta=(0, 0),
+                  note=" (3 chunks, the last partial)"),
+    state_passing("state_passing_bf16_q256_1chunk", (40, 200, 7), 1, 32, 16, cta=(0, 2), q=256, dtype="bf16"),
+)
+CASES += _STATE_PASSINGS + (negative(_STATE_PASSINGS[0], {"SLOT": 3}, "slot of sequence 0"),)
+
+
+# ===== CUDA-core GEMM for small M (cudaCoreGemm/cudaCoreGemm.cu) =====
+
+CORE_GEMM = KERNELS + "cudaCoreGemm/cudaCoreGemm.cu"
+CORE_MANGLED = {("f16", "f16"): "6__halfS4_", ("f16", "f32"): "6__halff", ("bf16", "bf16"): "13__nv_bfloat16S4_",
+                ("bf16", "f32"): "13__nv_bfloat16f", ("f32", "f32"): "ff", ("e4m3", "bf16"): "13__nv_fp8_e4m313__nv_bfloat16",
+                ("e4m3", "f16"): "13__nv_fp8_e4m36__half", ("e4m3", "f32"): "13__nv_fp8_e4m3f"}
+
+
+def cuda_core_gemm(name, m, n, k, cta, scaled=False, din="bf16", dout="bf16", check="ACCEPT", note=""):
+    """`cudaCoreGemmDispatcher(Params)` (cudaCoreGemm.cu:228): n even, k a multiple of 16 bytes'
+    elements, TILE_M = m (1..16), TILE_N 2, block 128, grid (n / 2, m / m = 1) (:151);
+    cudaCoreGemmV2 when scale_a and scale_b are given (the torch flow), else cudaCoreGemm with alpha."""
+    kernel = "14cudaCoreGemmV2" if scaled else "12cudaCoreGemm"
+    return Case(
+        name=name,
+        description=f"{kernel[2:]}<{din} -> {dout}, TILE_M {m}, TILE_N 2, 128>, {m} x {n} x {k}, block {cta} = columns "
+                    f"[{2 * cta}, {2 * cta + 2}){note}",
+        source=f"{CORE_GEMM}:{134 if scaled else 144}, host cudaCoreGemmKernel :151 via cudaCoreGemmDispatcher :228",
+        unit=CORE_GEMM,
+        symbol=f"{kernel}I{CORE_MANGLED[(din, dout)]}Li{m}ELi2ELi128EE",
+        args=((Ptr("act"), Ptr("w"), Ptr("sa"), Ptr("sb")) if scaled else (Ptr("act"), Ptr("w"), Float(1.0, "alpha")))
+             + (Ptr("out"), Int(m, "m"), Int(n, "n"), Int(k, "k")),
+        arrays=(Array("act", "in", din, (m, k)), Array("w", "in", din, (n, k)), Array("sa", "in", "f32", (1,)),
+                Array("sb", "in", "f32", (1,)), Array("out", "out", dout, (m, n))),
+        grid=(n // 2, 1, 1),
+        block=128,
+        check=check,
+        spec="cuda_core_gemm.spec",
+        dims={"M": m, "N": n, "K": k, "N0": 2 * cta, "N1": 2 * cta + 2, "SCALED": int(scaled), "ONE": 1},
+        cta=(cta, 0, 0),
+    )
+
+
+# Volta gap (UNKNOWN, true verdict unknown): cutlass's bf16 -> f32 NumericArrayConverter widens a
+# loaded pair by bits (`ld.global.nc.v4.b32 {%r13, ...}; shl.b32 %r17, %r13, 16; and.b32 %r18,
+# %r13, -65536`, cudaCoreGemm.ptx) and feeds the words to fma.rn.f32: "value kind mismatch (packed
+# pair used as a scalar)" on thread 0. f16, f32 and fp8 inputs convert by cvt and are decided.
+_CORE_GEMMS = (
+    cuda_core_gemm("cuda_core_gemm_bf16_m1", 1, 64, 4096, cta=31, check="UNKNOWN"),
+    cuda_core_gemm("cuda_core_gemm_bf16_f32_m3_scaled", 3, 10, 1032, cta=4, scaled=True, dout="f32", check="UNKNOWN",
+                   note=" (k 1032: the last k-tile 8 of 128 threads)"),
+    cuda_core_gemm("cuda_core_gemm_f16_f32_m3_scaled", 3, 10, 1032, cta=4, scaled=True, din="f16", dout="f32",
+                   note=" (k 1032: the last k-tile 8 of 128 threads)"),
+    cuda_core_gemm("cuda_core_gemm_f16_m16", 16, 4, 256, cta=1, din="f16", dout="f16", note=" (k 256 < one k-tile)"),
+    cuda_core_gemm("cuda_core_gemm_f32_m5", 5, 6, 132, cta=2, din="f32", dout="f32"),
+    cuda_core_gemm("cuda_core_gemm_fp8_bf16_m2_scaled", 2, 8, 2048, cta=3, scaled=True, din="e4m3", dout="bf16"),
+)
+CASES += _CORE_GEMMS + (negative(_CORE_GEMMS[2], {"SCALED": 0}, "unscaled"),
+                        negative(_CORE_GEMMS[5], {"N0": 4, "N1": 6}, "columns 4..6"))
+
+
+# ===== Group RMSNorm (groupRmsNormKernels/groupRmsNormKernels.cu) =====
+
+GROUP_RMS = KERNELS + "groupRmsNormKernels/groupRmsNormKernels.cu"
+
+
+def group_rms_fields(n):
+    """GroupRMSParams<n> (groupRmsNormKernels.h:32) in declaration order: (name, size, count)."""
+    return [("inputs", 8, n), ("outputs", 8, n), ("weights", 8, n), ("input_last_dims", 4, n),
+            ("input_strides", 4, n), ("output_strides", 4, n), ("warp_input_idx", 4, 32),
+            ("warp_prefix_sum", 4, n + 1), ("batch_size", 4, 1), ("num_inputs", 4, 1), ("eps", 4, 1),
+            ("weight_bias", 4, 1), ("enable_weights", 1, 1), ("dtype", 4, 1), ("stream", 8, 1)]
+
+
+def _f32_bits(v):
+    import struct
+    return struct.unpack("<I", struct.pack("<f", v))[0]
+
+
+def group_rms_layout(n):
+    offsets, at = {}, 0
+    for name, size, count in group_rms_fields(n):
+        at = -(-at // size) * size
+        offsets[name] = (at, size, count)
+        at += size * count
+    return offsets, -(-at // 8) * 8
+
+
+assert group_rms_layout(1)[1] == 208 and group_rms_layout(2)[1] == 248  # `.b8 ..._param_0[208]` / `[248]`
+
+
+def group_rms_norm(name, batch, dims, cta, weights=True, weight_bias=0.0, dtype="bf16", check="ACCEPT", note=""):
+    """`GroupRMSNormBaseKernelLauncher<n>` (groupRmsNormKernels.cu:647; the heuristic's choice for one input,
+    :806) -> `GroupRMSNormBaseKernel<DType, n, weights>(params)` (:600): rounded dims to 32 x kPacked,
+    warps = min(32, total / (32 kPacked)), rounds = ceil(needed / warps), warps per input round(rounded_i
+    x warps / total) (at least 1), grid batch, block (32, warps). Rows contiguous; eps f32(1e-6)."""
+    n = len(dims)
+    packed = 16 // (4 if dtype == "f32" else 2)
+    chunk = 32 * packed
+    rounded = [-(-d // chunk) * chunk for d in dims]
+    needed = sum(rounded) // chunk
+    warps = min(32, needed)
+    rounds = -(-needed // warps)
+    per_token = warps / sum(rounded)
+    prefix, idx = [0], []
+    for i, r in enumerate(rounded):
+        k = max(1, int(round(r * per_token)))
+        idx += [i] * k
+        prefix.append(prefix[-1] + k)
+    idx = (idx + [0] * 32)[:32]
+    offsets, _ = group_rms_layout(n)
+    names = ("a", "b") if n == 2 else ("",)
+    values = {"input_last_dims": dims, "input_strides": dims, "output_strides": dims, "warp_input_idx": idx,
+              "warp_prefix_sum": prefix, "batch_size": [batch], "num_inputs": [n], "enable_weights": [int(weights)],
+              "dtype": [{"f32": 0, "f16": 1, "bf16": 7}[dtype]]}
+    floats = {"eps": EPS, "weight_bias": weight_bias}
+    pointers = {"inputs": [f"x{s}" for s in names], "outputs": [f"out{s}" for s in names],
+                "weights": [f"w{s}" for s in names] if weights else None}
+    fields = []
+    for fname, (off, size, count) in offsets.items():
+        for k in range(count):
+            at = off + size * k
+            if fname in pointers:
+                ptrs = pointers[fname]
+                fields.append({"offset": at, "ptr": ptrs[k]} if ptrs else {"offset": at, "u64": 0})
+            elif fname in floats:
+                fields.append({"offset": at, "u32": _f32_bits(floats[fname])})
+            else:
+                fields.append({"offset": at, {1: "u8", 4: "u32", 8: "u64"}[size]: values.get(fname, [0] * count)[k]})
+    arrays = []
+    for s, d in zip(names, dims):
+        arrays += [Array(f"x{s}", "in", dtype, (batch, d)), Array(f"w{s}", "in", dtype, (d,)),
+                   Array(f"out{s}", "out", dtype, (batch, d))]
+    t = {"f32": "f", "f16": "6__half", "bf16": "13__nv_bfloat16"}[dtype]
+    spec_dims = {"B": batch, "BI": cta, "WEIGHTS": int(weights), "WB": int(weight_bias)}
+    spec_dims.update({"D": dims[0]} if n == 1 else {"DA": dims[0], "DB": dims[1]})
+    return Case(
+        name=name,
+        description=f"GroupRMSNormBaseKernel<{dtype}, float4, {n}, {'weights' if weights else 'no weights'}, "
+                    f"{rounds} round(s)>, batch {batch}, dims {dims}, {warps} warps (input of warp: {idx[:warps]}), "
+                    f"weight bias {weight_bias}, block {cta}{note}",
+        source=f"{GROUP_RMS}:91 (GroupRMSNormBaseKernel), host GroupRMSNormBaseKernel :600 (launch :619)",
+        unit=GROUP_RMS,
+        symbol=f"22GroupRMSNormBaseKernelI{t}6float4Li{n}ELb{int(weights)}ELb{int(rounds > 1)}EE",
+        args=(Struct(tuple(fields), "params"), Int(rounds, "rounds")),
+        arrays=tuple(arrays),
+        grid=(batch, 1, 1),
+        block=(32, warps, 1),
+        check=check,
+        spec=f"group_rms_norm{n}.spec",
+        dims=spec_dims,
+        cta=(cta, 0, 0),
+    )
+
+
+# REJECT, a memory conflict in every launch of more than one warp (a lead: noticed while reading
+# the kernel to write the spec, so uncounted): warp 0 clears smem_warp_sum_sqs[] and
+# smem_input_mask[] (:105-:109) while each other warp's lane 0 stores its own slot (:176, :184),
+# with no barrier between: "WriteWrite, Shared addr 260: t1 line 4051 `st.shared.b32 [%r4], 0` /
+# t32 line 4158 `st.shared.b32 [%r54], %r9`" (groupRmsNormKernels.ptx) and likewise addr 132 (33
+# against input_idx). If warp 0 lags, a warp's partial sum of squares is zeroed and its input's
+# RMS is wrong. The outputs match the spec in Volta's schedule (init first). One warp: ACCEPT.
+_GROUP_RMS = (
+    group_rms_norm("group_rms_norm_bf16_128", 2, (128,), cta=1, note=" (one warp)"),
+    group_rms_norm("group_rms_norm_f16_256_noweights", 1, (256,), cta=0, dtype="f16", weights=False,
+                   note=" (one warp)"),
+    group_rms_norm("group_rms_norm_bf16_2048", 2, (2048,), cta=1, weight_bias=1.0, check="REJECT"),
+    group_rms_norm("group_rms_norm_f32_4224_rounds", 1, (4224,), cta=0, dtype="f32", weights=False, check="REJECT",
+                   note=" (33 warp chunks on 32 warps: 2 rounds)"),
+    group_rms_norm("group_rms_norm_bf16_qk_2in", 3, (1536, 512), cta=2, check="REJECT", note=" (q_a and kv_a norms)"),
+    group_rms_norm("group_rms_norm_f32_2in_odd", 1, (96, 1056), cta=0, dtype="f32", check="REJECT",
+                   note=" (dims not multiples of a warp chunk)"),
+)
+CASES += _GROUP_RMS + (negative(_GROUP_RMS[0], {"WEIGHTS": 0}, "no weights"),)
+
+
+# ===== Llama 4 min-latency router GEMM (llama4MinLatencyKernels/llama4Bf16Bf16Gemm.cu) =====
+
+LLAMA4_BF16 = KERNELS + "llama4MinLatencyKernels/llama4Bf16Bf16Gemm.cu"
+
+
+def llama4_bf16_gemm(name, tokens, cta, check="ACCEPT", note=""):
+    """`llama4_bf16_bf16_gemm_launcher(num_tokens, A, B, C)` (llama4Bf16Bf16Gemm.cu:115): grid 128 x tokens
+    (block = token x 128 + expert), block 256, K 5120 (llama4Utils.cuh:32), bf16 out [tokens, 128]."""
+    t, e = divmod(cta, 128)
+    return Case(
+        name=name,
+        description=f"llama4_bf16_bf16_gemm_kernel, {tokens} tokens x 128 experts x 5120, block {cta} = "
+                    f"(token {t}, expert {e}){note}",
+        source=f"{LLAMA4_BF16}:31 (llama4_bf16_bf16_gemm_kernel), host llama4_bf16_bf16_gemm_launcher :115",
+        unit=LLAMA4_BF16,
+        symbol="28llama4_bf16_bf16_gemm_kernel",
+        args=(Int(tokens, "num_tokens"), Ptr("a"), Ptr("w"), Ptr("out")),
+        arrays=(Array("a", "in", "bf16", (tokens, 5120)), Array("w", "in", "bf16", (128, 5120)),
+                Array("out", "out", "bf16", (tokens, 128))),
+        grid=(128 * tokens, 1, 1),
+        block=256,
+        check=check,
+        spec="router_gemm.spec",
+        dims={"T": tokens, "E": 128, "K": 5120, "N0": e, "N1": e + 1, "M0": t, "M1": t + 1},
+        cta=(cta, 0, 0),
+    )
+
+
+_LLAMA4 = (
+    llama4_bf16_gemm("llama4_bf16_gemm_3tok", 3, cta=2 * 128 + 127, note=" (last block)"),
+    llama4_bf16_gemm("llama4_bf16_gemm_1tok", 1, cta=5),
+)
+CASES += _LLAMA4 + (negative(_LLAMA4[0], {"M0": 1, "M1": 2}, "token 1"),)
+
+
+# ===== MTP speculative decoding (speculativeDecoding/mtpKernels.cu) =====
+
+MTP = KERNELS + "speculativeDecoding/mtpKernels.cu"
+PAST_HIDDEN, PAST_TOKENS = 0x40000000, 0x50000000  # placed so the pointer arrays can name rows
+
+
+def mtp_prepare_drafter(name, modules, ctx_lens, n_gen, hidden, cta, past_rows=None, accepted=None, dtype="bf16",
+                        check="ACCEPT", note=""):
+    """`invokeMTPPrepareDrafterInputs<T>(params)` (mtpKernels.cu:161): grid batchSize (context requests
+    first), block 512, float4 copies (hidden * sizeof(T) % 16 == 0). seqLens: a context request's
+    prompt length, a generation request's numMTPModules + 1 (:73). mtpPastHiddenStatesPtrs[b] /
+    mtpPastTokensPtrs[b] point at row past_rows[b] of one [R, M, H] / [R, M] pool."""
+    batch = len(ctx_lens) + n_gen
+    lens = list(ctx_lens) + [modules + 1] * n_gen
+    past_rows = past_rows or list(range(batch))
+    accepted = accepted or [1 + b % (modules + 1) for b in range(batch)]
+    rows = max(past_rows) + 1
+    width = 4 if dtype == "f32" else 2
+    io = sum(lens[:cta])
+    ro = sum(lens[i] if i < len(ctx_lens) else modules for i in range(cta))
+    n = sum(lens)
+    nr = sum(ctx_lens) + n_gen * modules
+    return Case(
+        name=name,
+        description=f"mtpPrepareDrafterInputsKernel<{dtype}>, {modules} MTP modules, context prompts {ctx_lens} + "
+                    f"{n_gen} generation requests, hidden {hidden}, past rows {past_rows}, accepted counts {accepted}, "
+                    f"block {cta} ({'context' if cta < len(ctx_lens) else 'generation'}){note}",
+        source=f"{MTP}:67 (mtpPrepareDrafterInputsKernel), host invokeMTPPrepareDrafterInputs :161",
+        unit=MTP,
+        symbol=f"29mtpPrepareDrafterInputsKernelI{T_MANGLED.get(dtype, 'f')}E",
+        args=(Int(modules, "numMTPModules"), Int(len(ctx_lens), "numContextRequest"), Int(hidden, "hiddenSize"),
+              Ptr("input_ids"), Ptr("seq_lens"), Ptr("hidden_ptrs"), Ptr("token_ptrs"), Ptr("hidden"),
+              Ptr("accepted"), Ptr("num_accepted"), Ptr("ret_ids"), Ptr("ret_hidden")),
+        arrays=(Array("seq_lens", "index", "i32", (batch,), contents=tuple(lens)),
+                Array("num_accepted", "index", "i32", (batch,), contents=tuple(accepted)),
+                i64_index("hidden_ptrs", [PAST_HIDDEN + r * modules * hidden * width for r in past_rows]),
+                i64_index("token_ptrs", [PAST_TOKENS + r * modules * 4 for r in past_rows]),
+                Array("input_ids", "in", "i32", (n,)), Array("accepted", "in", "i32", (batch, modules + 1)),
+                Array("past_tokens", "in", "i32", (rows, modules), base=PAST_TOKENS),
+                Array("hidden", "in", dtype, (n, hidden)),
+                Array("past_hidden", "in", dtype, (rows, modules, hidden), base=PAST_HIDDEN),
+                Array("ret_ids", "out", "i32", (nr,)), Array("ret_hidden", "out", dtype, (nr, hidden))),
+        grid=(batch, 1, 1),
+        block=512,
+        check=check,
+        spec="mtp_prepare_drafter.spec",
+        dims={"N": n, "NR": nr, "B": batch, "M": modules, "M1": modules + 1, "HS": hidden, "R": rows, "BI": cta,
+              "IO": io, "RO": ro, "L": lens[cta], "CTX": int(cta < len(ctx_lens)), "PR": past_rows[cta],
+              "NA": accepted[cta]},
+        cta=(cta, 0, 0),
+    )
+
+
+_MTP_PREPARE = (
+    mtp_prepare_drafter("mtp_prepare_ctx_bf16", 1, (5, 3), 2, 256, cta=1, note=" (prompt of 3)"),
+    mtp_prepare_drafter("mtp_prepare_gen_bf16", 3, (5,), 3, 256, cta=2, past_rows=(4, 0, 2, 1), accepted=(1, 4, 2, 3),
+                        note=" (past row 2, 2 accepted)"),
+    mtp_prepare_drafter("mtp_prepare_gen_f32_7168", 1, (), 2, 7168, cta=1, dtype="f32",
+                        note=" (DeepSeek hidden 7168: 1792 float4 over 512 threads)"),
+)
+CASES += _MTP_PREPARE + (negative(_MTP_PREPARE[1], {"NA": 1}, "first accepted token"),)
+
+
+# ===== Speculative decoding: move accepted draft tokens in the KV cache (kvCacheUpdateKernels.cu) =====
+
+KV_UPDATE = KERNELS + "speculativeDecoding/kvCacheUpdateKernels.cu"
+KV_POOL = 0x60000000
+
+
+def kv_draft_update(name, accepted, past_lens, heads, head_dim, max_len, cta, layers=1, rewind=0, remap=None,
+                    dtype="bf16", check="ACCEPT", note=""):
+    """`updateLinearKVCacheDraftTokenLocation(offsets, packedIndices, pastLens, pastKeyValueList, layers,
+    seqs, heads, headBytes, rewind, nullptr, remap, maxKVCacheLen)` (kvCacheUpdateKernels.cu:449):
+    KVLinearBuffer(seqs, maxLen, heads x headBytes, ...) per layer (:458); the batched kernel
+    (:297) with the widest MoveEltType dividing headBytes (int4 here), grid (seqs, heads, layers),
+    block 128, std::array<KVLinearBuffer, 32> by value. `accepted[s]` = sequence s's accepted draft
+    indices (packed); pastLens by slot; layer l's cache at KV_POOL + l x its bytes."""
+    width = 2 if dtype in ("bf16", "f16") else 4
+    head_bytes = head_dim * width
+    assert head_bytes % 16 == 0
+    elts = head_bytes // 16
+    seqs = len(accepted)
+    slots = max(remap) + 1 if remap else seqs
+    offsets = [0]
+    for a in accepted:
+        offsets.append(offsets[-1] + len(a))
+    packed = [i for a in accepted for i in a]
+    bytes_per_seq = max_len * heads * head_bytes
+    layer_bytes = slots * 2 * bytes_per_seq
+    fields = []
+    for l in range(32):
+        base = 48 * l
+        vals = (slots, max_len, bytes_per_seq, max_len, 0, max_len, 0, 2) if l < layers else (0,) * 8
+        fields += [{"offset": base + 4 * k, "u32": v} for k, v in enumerate(vals)]
+        fields += [{"offset": base + 32, "u8": 0}, {"offset": base + 40, "u64": KV_POOL + l * layer_bytes if l < layers else 0}]
+    s, hi, li = cta
+    slot = remap[s] if remap else s
+    return Case(
+        name=name,
+        description=f"updateKVCacheDraftTokenLocationBatchedKernel<KVLinearBuffer, 32, int4>, {layers} layer(s), "
+                    f"{seqs} sequences accepting {accepted}, past lengths {past_lens}, rewind {rewind}, {heads} heads "
+                    f"x {head_dim} {dtype}, max length {max_len}{', slots ' + str(remap) if remap else ''}, block {cta}"
+                    f"{note}{HIDDEN}",
+        source=f"{KV_UPDATE}:37 (updateKVCacheDraftTokenLocationBatchedKernel), host "
+               f"updateLinearKVCacheDraftTokenLocation :449 -> updateKVCacheDraftTokenLocationBatched :297",
+        unit=KV_UPDATE,
+        symbol="44updateKVCacheDraftTokenLocationBatchedKernelINS1_14KVLinearBufferELi32E4int4EE",
+        args=(Struct(tuple(fields), "kvCacheBuffers"), Ptr("offsets"), Ptr("packed"), Ptr("past_lens"),
+              Int(rewind, "rewindDraftTokenCommonCount"), NULL, Ptr("remap") if remap else NULL, NULL,
+              Int(elts, "eltCountPerHead")),
+        arrays=(Array("offsets", "index", "i32", (seqs + 1,), contents=tuple(offsets)),
+                Array("packed", "index", "i32", (max(1, len(packed)),), contents=tuple(packed) or (0,)),
+                Array("past_lens", "index", "i32", (slots,), contents=tuple(past_lens)),
+                *((Array("remap", "index", "i32", (seqs,), contents=tuple(remap)),) if remap else ()),
+                Array("cache", "inout", dtype, (layers, slots, 2, heads, max_len, head_dim), base=KV_POOL)),
+        grid=(seqs, heads, layers),
+        block=128,
+        check=check,
+        spec="kv_draft_update.spec",
+        dims={"NL": layers, "S": slots, "TWO": 2, "H": heads, "ML": max_len, "D": head_dim, "NI": max(1, len(packed)),
+              "LI": li, "SLOT": slot, "HI": hi, "ST": past_lens[slot] - rewind, "CNT": len(accepted[s]),
+              "OFF": offsets[s]},
+        cta=cta,
+    )
+
+
+_KV_UPDATES = (
+    kv_draft_update("kv_draft_update_bf16", ((0, 2, 3), (1, 3)), (10, 7), 2, 64, 16, cta=(0, 1, 0), rewind=4,
+                    note=" (accepted 0, 2, 3 of 4 drafts)"),
+    kv_draft_update("kv_draft_update_remap_layer1", ((0, 2, 3), (1, 3)), (9, 6, 11), 2, 128, 16, cta=(1, 0, 1),
+                    layers=2, rewind=5, remap=(2, 0), note=" (slot 0, layer 1)"),
+    kv_draft_update("kv_draft_update_overlap_f32", ((1, 0, 2),), (8,), 1, 32, 12, cta=(0, 0, 0), rewind=3,
+                    dtype="f32", note=" (permuted: destination 5 is source 6, 6 is 5)"),
+)
+CASES += tuple(hidden(c, c.check) for c in _KV_UPDATES) + (
+    hidden(negative(_KV_UPDATES[0], {"ST": 7}, "one token earlier"), "REJECT"),)

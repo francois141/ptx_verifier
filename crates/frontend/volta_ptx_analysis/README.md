@@ -238,3 +238,9 @@ reduce the members' predicates; an exited mask lane is an error, since every mas
 execute it. `brev` and `bfind{.shiftamt}` (signed operands search for the first bit unlike the
 sign; no such bit gives `0xffffffff`) fold concrete words and reject symbolic ones. Tests:
 `vote_sync_modes`, `vote_sync_with_an_exited_mask_lane`, `brev_bfind`.
+
+### Float outputs from bit patterns
+
+A launch file's float `dtype`s are kept in `AnalysisConfig::float_arrays`: a concrete integer stored
+to such an output (`mov.b32 %r, 0xff800000; st.global.b32`) reads back as the float of that type, so
+it compares with a spec's value. Test: `masked_logit_bits_are_minus_infinity`.

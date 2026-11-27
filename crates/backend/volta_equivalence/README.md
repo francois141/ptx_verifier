@@ -81,3 +81,10 @@ in `volta_pipeline/tests/`. `matmul_transposed.spec` stores B as `[N, K]`,
 so its `B[j, k]` indexing also covers rectangular operands. `attention_batch_head.spec`
 selects one batch/head from BHSD inputs; its caller checks the global output footprint
 before comparing the local output slice.
+
+### Infinite elements
+
+An element that is an infinite constant on either side (a masked logit's `-inf`) is decided before
+canon, whose exact rationals carry no infinity: two equal infinities are equivalent, an infinity
+against anything else is not shown equal (a refutation still needs the numeric oracle). Test:
+`volta_pipeline`'s `masked_logit_bits_are_minus_infinity`.

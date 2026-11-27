@@ -171,6 +171,9 @@ pub struct AnalysisConfig {
     /// Concrete 32-bit words of input arrays, by name: the AMD frontend reads them, and the PTX
     /// frontend those of 4-byte index arrays
     pub array_contents: Vec<(String, Vec<u32>)>,
+    /// The float element type of arrays declared with a float dtype, by name: a concrete bit
+    /// pattern stored to such an output (a masked logit's `0xff800000`) reads back as that float
+    pub float_arrays: Vec<(String, crate::frontend::ast::ScalarType)>,
 }
 
 impl AnalysisConfig {
@@ -185,6 +188,7 @@ impl AnalysisConfig {
             dynamic_shared_bytes: 0,
             max_instructions: 2_000_000_000,
             array_contents: Vec::new(),
+            float_arrays: Vec::new(),
         }
     }
 

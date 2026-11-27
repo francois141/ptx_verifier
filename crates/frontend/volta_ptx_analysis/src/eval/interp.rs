@@ -577,6 +577,13 @@ impl<'p> Interpreter<'p> {
         // Nodes pushed while extracting (recombined integer halves) are constants.
         let dependence = self.arena.undefined_dependence();
         let undefined = |e: ExprId| dependence.get(e).copied().unwrap_or(false);
+        let float_types = self.config.float_arrays.clone();
+        let float_type = |name: &str| {
+            float_types
+                .iter()
+                .find(|(array, _)| array == name)
+                .map(|&(_, ty)| ty)
+        };
         let mut outputs = Vec::new();
         for array in &self.config.arrays {
             if !array.kind.is_output() {
@@ -628,6 +635,13 @@ impl<'p> Interpreter<'p> {
                                 index,
                             });
                         }
+                        let e = match float_type(&array.name) {
+                            Some(ty) if self.arena.as_int_const(e).is_some() => {
+                                let pc = InstrId(0);
+                                float_bits::decode_float_bits(&mut self.arena, pc, ty, e)?
+                            }
+                            _ => e,
+                        };
                         elems.push((index, e));
                     }
                     // A packed pair granule over two adjacent narrow elements.

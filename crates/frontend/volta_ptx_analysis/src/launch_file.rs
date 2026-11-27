@@ -127,6 +127,11 @@ impl LaunchFile {
         }
 
         config.array_contents = array_contents(&raw.arrays)?;
+        config.float_arrays = raw
+            .arrays
+            .iter()
+            .filter_map(|raw| Some((raw.name.clone(), float_dtype(raw.dtype.as_deref()?)?)))
+            .collect();
         config.arrays = lay_out_arrays(raw.arrays)?;
 
         for (position, param) in raw.params.into_iter().enumerate() {
@@ -309,6 +314,18 @@ impl RawArray {
             len,
             kind: self.kind.into(),
         })
+    }
+}
+
+/// The float type a `dtype` names, if any.
+fn float_dtype(dtype: &str) -> Option<crate::frontend::ast::ScalarType> {
+    use crate::frontend::ast::ScalarType;
+    match dtype {
+        "f16" | "fp16" => Some(ScalarType::F16),
+        "bf16" => Some(ScalarType::Bf16),
+        "f32" | "fp32" => Some(ScalarType::F32),
+        "f64" | "fp64" => Some(ScalarType::F64),
+        _ => None,
     }
 }
 
