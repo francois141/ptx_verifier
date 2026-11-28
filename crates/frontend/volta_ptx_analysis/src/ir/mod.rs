@@ -23,6 +23,7 @@ use crate::ir::tcgen05::{
 };
 use crate::ir::tensor_map::{TensorLoadMode, TensormapFieldWrite};
 use crate::ir::types::RegCounts;
+pub use volta_expr::symbolic_full::IntegerRounding;
 pub use volta_graph::BulkWaitScope;
 
 /// Instruction index (program counter)
@@ -488,6 +489,17 @@ pub enum LoweredInstr {
         clamp: Option<Clamp>,
     },
 
+    /// `cvt.{rni,rzi,rmi,rpi}` (PTX ISA 9.7.9.21): a float rounded to an integer, kept
+    /// as a float of the same size or clamped to an integer `dst_ty`'s range (which
+    /// makes a float-to-integer `.sat` redundant).
+    CvtRoundInt {
+        dst: RegId,
+        src: Operand,
+        dst_ty: ScalarType,
+        src_ty: ScalarType,
+        rounding: IntegerRounding,
+    },
+
     /// `cvt.rn{.relu}.f16x2.e4m3x2` (PTX ISA 9.7.9.22), the only fp8
     /// direction in the corpus. A `Value::Pair` source is already real
     /// (identity); a `Value::Scalar` is a bit pattern, decoded as e4m3.
@@ -564,6 +576,25 @@ pub enum LoweredInstr {
         shift: Operand,
         dir: ShiftDir,
         mode: ClampWrapMode,
+    },
+
+    /// `bmsk.{clamp,wrap}.b32` (PTX ISA 9.7.1.22): `width` ones from bit `start`.
+    Bmsk {
+        dst: RegId,
+        start: Operand,
+        width: Operand,
+        mode: ClampWrapMode,
+    },
+
+    /// `set.CmpOp.dtype.stype` (PTX ISA 9.7.6.1, 9.7.7.1): where the comparison holds,
+    /// 1.0 for a float `dst_ty` and all ones for an integer one, else 0.
+    Set {
+        cmp: CmpOp,
+        dst: RegId,
+        src_a: Operand,
+        src_b: Operand,
+        src_ty: ScalarType,
+        dst_ty: ScalarType,
     },
 
     // =========================================================================
@@ -1046,6 +1077,10 @@ pub enum LoweredInstr {
     /// Abort execution. Reaching this during evaluation is an analysis error.
     Trap,
 
+    /// An `atom` or `red`. Atomics are not modeled, so executing one stops the run as
+    /// unsupported; a kernel whose launch never reaches one is analyzed in full.
+    UnmodeledAtomic { instruction: String },
+
     /// No operation (placeholder)
     Nop,
 }
@@ -1139,6 +1174,7 @@ define_instr_kinds!(
     Setp,
     Selp,
     Cvt,
+    CvtRoundInt,
     CvtE4m3x2ToF16x2,
     CvtPackHalves,
     UnpackHalves,
@@ -1146,6 +1182,8 @@ define_instr_kinds!(
     PackQuad,
     UnpackQuad,
     Shf,
+    Bmsk,
+    Set,
     Bra,
     Ret,
     Exit,
@@ -1202,6 +1240,7 @@ define_instr_kinds!(
     MbarrierWaitParity,
     MbarrierWaitOnce,
     Trap,
+    UnmodeledAtomic,
     Nop,
 );
 

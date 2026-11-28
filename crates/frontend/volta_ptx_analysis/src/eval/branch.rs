@@ -169,6 +169,9 @@ fn computes_into_registers(instr: &LoweredInstr) -> bool {
             | LoweredInstr::Setp { .. }
             | LoweredInstr::Selp { .. }
             | LoweredInstr::Cvt { .. }
+            | LoweredInstr::CvtRoundInt { .. }
+            | LoweredInstr::Bmsk { .. }
+            | LoweredInstr::Set { .. }
             | LoweredInstr::CvtE4m3x2ToF16x2 { .. }
             | LoweredInstr::CvtPackHalves { .. }
             | LoweredInstr::UnpackHalves { .. }

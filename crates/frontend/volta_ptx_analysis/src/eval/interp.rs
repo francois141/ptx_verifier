@@ -36,7 +36,9 @@ use crate::ir::{
     Operand, TensormapFence,
 };
 use volta_common::logging::{info, warn};
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, PrmtSelector, StringId, Type, Width};
+use volta_expr::symbolic_full::{
+    ExprArena, ExprId, ExprNode, PrmtSelector, Real, StringId, Type, Width,
+};
 use volta_graph::{
     AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,
     GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
@@ -1423,6 +1425,53 @@ impl<'p> Interpreter<'p> {
                 self.write_reg(t, *dst, result);
             }
 
+            LoweredInstr::CvtRoundInt {
+                dst,
+                src,
+                dst_ty,
+                src_ty,
+                rounding,
+            } => {
+                let a = self.scalar_operand(t, pc, src)?;
+                let r = self.eval_cvt_round_int(pc, *dst_ty, *src_ty, *rounding, a)?;
+                self.write_reg(t, *dst, Value::Scalar(r));
+            }
+
+            LoweredInstr::Bmsk {
+                dst,
+                start,
+                width,
+                mode,
+            } => {
+                let r = self.eval_bmsk(t, pc, start, width, *mode)?;
+                self.write_reg(t, *dst, Value::Scalar(r));
+            }
+
+            LoweredInstr::Set {
+                cmp,
+                dst,
+                src_a,
+                src_b,
+                src_ty,
+                dst_ty,
+            } => {
+                let a = self.scalar_operand(t, pc, src_a)?;
+                let b = self.scalar_operand(t, pc, src_b)?;
+                let holds = self.eval_cmp(pc, *cmp, *src_ty, a, b)?;
+                let (on, off) = if dst_ty.is_float() {
+                    (self.arena.real(Real::one()), self.arena.real(Real::zero()))
+                } else {
+                    let ones = match dst_ty.bits() {
+                        64.. => -1,
+                        _ if dst_ty.is_signed_int() => -1,
+                        bits => (1i64 << bits) - 1,
+                    };
+                    (self.arena.int(ones), self.arena.int(0))
+                };
+                let r = self.arena.select(expr_type(*dst_ty), holds, on, off);
+                self.write_reg(t, *dst, Value::Scalar(r));
+            }
+
             LoweredInstr::CvtE4m3x2ToF16x2 { dst, src, relu } => {
                 let clamp = relu.then_some(Clamp::Relu);
                 let result = match self.operand_value(t, pc, src)? {
@@ -2170,6 +2219,13 @@ impl<'p> Interpreter<'p> {
 
             LoweredInstr::Trap => {
                 return Err(EvalError::TrapReached { thread: t, pc });
+            }
+
+            LoweredInstr::UnmodeledAtomic { instruction } => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: format!("an atomic ({instruction}): atomics are not modeled"),
+                });
             }
         }
 

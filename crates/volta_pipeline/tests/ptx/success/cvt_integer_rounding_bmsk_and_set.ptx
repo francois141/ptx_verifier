@@ -1,0 +1,46 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// cvt's integer roundings (PTX ISA 9.7.9.21), a float-to-integer .sat, bmsk in both modes
+// (9.7.1.22) and set (9.7.6.1): out[0..11] are -3, -2, -2, 2, 4, 2147483647, 2.0, 6,
+// 0xc0000000, 0, 30 and (in[0] < in[1] ? 1.0 : 0.0).
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<12>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvt.rmi.s32.f32 %r1, 0fC0200000;
+    st.global.u32 [%rd2], %r1;
+    cvt.rpi.s32.f32 %r2, 0fC0200000;
+    st.global.u32 [%rd2+4], %r2;
+    cvt.rzi.s32.f32 %r3, 0fC02CCCCD;
+    st.global.u32 [%rd2+8], %r3;
+    cvt.rni.s32.f32 %r4, 0f40200000;
+    st.global.u32 [%rd2+12], %r4;
+    cvt.rni.s32.f32 %r5, 0f40600000;
+    st.global.u32 [%rd2+16], %r5;
+    cvt.rni.sat.s32.f32 %r6, 0f501502F9;
+    st.global.u32 [%rd2+20], %r6;
+    cvt.rmi.f32.f32 %f1, 0f40200000;
+    st.global.f32 [%rd2+24], %f1;
+    bmsk.clamp.b32 %r7, 1, 2;
+    st.global.u32 [%rd2+28], %r7;
+    bmsk.clamp.b32 %r8, 30, 4;
+    st.global.u32 [%rd2+32], %r8;
+    bmsk.clamp.b32 %r9, 33, 4;
+    st.global.u32 [%rd2+36], %r9;
+    bmsk.wrap.b32 %r10, 33, 4;
+    st.global.u32 [%rd2+40], %r10;
+    ld.global.f32 %f2, [%rd1];
+    ld.global.f32 %f3, [%rd1+4];
+    set.lt.f32.f32 %r11, %f2, %f3;
+    st.global.u32 [%rd2+44], %r11;
+    ret;
+}

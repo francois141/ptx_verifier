@@ -795,10 +795,15 @@ fn test_reject_cvt_modifiers_keep_plain_conversions() {
     assert_rejected("cvt.rn.relu.f32.f16 %f1, %rs1;", ".relu");
     // .satfinite clamps to the destination's finite range: not modeled.
     assert_rejected("cvt.rn.satfinite.f16.f32 %rs1, %f1;", ".satfinite");
-    // Integer rounding stays rejected, including under an accepted clamp.
-    assert_rejected("cvt.rmi.f32.f32 %f1, %f2;", "integer-rounding");
-    assert_rejected("cvt.rzi.s32.f32 %r1, %f1;", "integer-rounding");
-    assert_rejected("cvt.rzi.sat.f32.f32 %f1, %f2;", "integer-rounding");
+    // Integer rounding lowers from a float to an integer or a same-size float, where a
+    // float-to-integer .sat is redundant; a float clamp after it is not modeled.
+    assert_lowers("cvt.rmi.f32.f32 %f1, %f2;");
+    assert_lowers("cvt.rni.sat.s32.f32 %r1, %f1;");
+    assert_rejected(
+        "cvt.rzi.sat.f32.f32 %f1, %f2;",
+        "integer rounding with a .sat",
+    );
+    assert_rejected("cvt.rzi.f32.s32 %f1, %r1;", "integer rounding from");
     // cvt.pack has its own InstrKind (CvtPack) with no lowering: it hits
     // the already-loud whole-instruction catch-all. The CvtInstr::Pack
     // rejection in lower_cvt is fail-closed insurance behind it.

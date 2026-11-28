@@ -46,6 +46,15 @@ impl std::error::Error for NanError {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Real(Arc<RealRepr>);
 
+/// The integer a value rounds to: PTX's `.rni`, `.rzi`, `.rmi` and `.rpi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerRounding {
+    NearestEven,
+    TowardZero,
+    Down,
+    Up,
+}
+
 /// The variant order gives the derived `Ord` the extended-real order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RealRepr {
@@ -101,6 +110,49 @@ impl Real {
         match self.repr() {
             RealRepr::NegInf | RealRepr::PosInf => Real::from_repr(RealRepr::PosInf),
             RealRepr::Rational(q) => Real::from_rational(rug::Rational::from(q.abs_ref())),
+        }
+    }
+
+    /// The integer `mode` rounds this value to; an infinity is its own rounding.
+    pub fn round_to_integer(&self, mode: IntegerRounding) -> Real {
+        let RealRepr::Rational(q) = self.repr() else {
+            return self.clone();
+        };
+        let floor = q.clone().floor();
+        let rounded = match mode {
+            IntegerRounding::Down => floor,
+            IntegerRounding::Up => q.clone().ceil(),
+            IntegerRounding::TowardZero => q.clone().trunc(),
+            IntegerRounding::NearestEven => {
+                let above = rug::Rational::from(q - &floor);
+                let half = rug::Rational::from((1, 2));
+                let floor_is_even = floor.numer().is_even();
+                if above > half || (above == half && !floor_is_even) {
+                    floor + 1u32
+                } else {
+                    floor
+                }
+            }
+        };
+        Real::from_rational(rounded)
+    }
+
+    /// This value clamped to `[lo, hi]`, if it is an integer or an infinity.
+    pub fn clamp_integer(&self, lo: i128, hi: i128) -> Option<i128> {
+        match self.repr() {
+            RealRepr::NegInf => Some(lo),
+            RealRepr::PosInf => Some(hi),
+            RealRepr::Rational(q) if *q.denom() == 1 => {
+                let n = q.numer();
+                Some(if *n < lo {
+                    lo
+                } else if *n > hi {
+                    hi
+                } else {
+                    n.to_i128().expect("an integer within i128 bounds")
+                })
+            }
+            RealRepr::Rational(_) => None,
         }
     }
 

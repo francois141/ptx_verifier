@@ -11,7 +11,7 @@ use crate::eval::interp::{Interpreter, reg_bits};
 use crate::eval::value::Value;
 use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
+use crate::ir::{BinOp, Clamp, CmpOp, InstrId, IntegerRounding, Operand, UnaryOp};
 use volta_common::logging::warn;
 use volta_expr::symbolic_full::{ExprId, ExprNode, Real, Signedness, Type, Width};
 
@@ -932,6 +932,78 @@ impl<'p> Interpreter<'p> {
             return Ok(self.arena.int(r));
         }
         Ok(a)
+    }
+
+    /// `cvt` with integer rounding, exact on a concrete value. A symbolic one is rounded
+    /// only when it is an integer converted to a float, which rounds to that integer.
+    pub(in crate::eval) fn eval_cvt_round_int(
+        &mut self,
+        pc: InstrId,
+        dst_ty: ScalarType,
+        src_ty: ScalarType,
+        rounding: IntegerRounding,
+        a: ExprId,
+    ) -> EvalResult<ExprId> {
+        let value = float_bits::decode_float_bits(&mut self.arena, pc, src_ty, a)?;
+        let real = match self.arena.value_node(value) {
+            ExprNode::RealConst(r) => r.clone(),
+            ExprNode::IntConst(v) => Real::from_i64(*v),
+            ExprNode::ToFloat(int) => {
+                return Ok(if dst_ty.is_float() { value } else { *int });
+            }
+            _ => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: format!(
+                        "cvt rounding a symbolic .{src_ty:?} to an integer (no expression \
+                         form)"
+                    ),
+                });
+            }
+        };
+        let rounded = real.round_to_integer(rounding);
+        if dst_ty.is_float() {
+            return Ok(self.arena.real(rounded));
+        }
+        let bits = dst_ty.bits().min(64);
+        let signed = dst_ty.is_signed_int();
+        let (lo, hi) = if signed {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0, (1i128 << bits) - 1)
+        };
+        let n = rounded
+            .clamp_integer(lo, hi)
+            .expect("an integer rounding is an integer or an infinity");
+        Ok(self.arena.int(canon_int(n as i64, bits, signed)))
+    }
+
+    /// `bmsk.{clamp,wrap}.b32` over concrete operands (PTX ISA 9.7.1.22, Semantics).
+    pub(in crate::eval) fn eval_bmsk(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        start: &Operand,
+        width: &Operand,
+        mode: ClampWrapMode,
+    ) -> EvalResult<ExprId> {
+        let a = self.concrete_operand(t, pc, start, "bmsk start")? as u32;
+        let b = self.concrete_operand(t, pc, width, "bmsk width")? as u32;
+        let (a1, b1) = (a & 0x1f, b & 0x1f);
+        let sum = a1 + b1;
+        let mut mask0 = u32::MAX << a1;
+        let clamp = mode == ClampWrapMode::Clamp;
+        if clamp && a >= 32 {
+            mask0 = 0;
+        }
+        let mask1 = if sum >= 32 || (clamp && (a >= 32 || b >= 32)) {
+            0
+        } else if b1 == 0 {
+            u32::MAX
+        } else {
+            u32::MAX << sum
+        };
+        Ok(self.arena.int(i64::from(mask0 & !mask1)))
     }
 
     /// 64- and 32-bit bitwise ops with a packed-pair operand, evaluated lane-wise with

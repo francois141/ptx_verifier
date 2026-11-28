@@ -166,6 +166,18 @@ SUITES = [
         std="c++20",
         exclude=("customAllReduce", "helixAllToAll", "dwdpFabric"),
     ),
+    Suite(
+        "TensorRT",
+        ("plugin/**/*.cu", "volta_units/*.cu"),
+        ("include", "plugin", "plugin/common", "plugin/common/kernels", "plugin/disentangledAttentionPlugin",
+         "plugin/efficientNMSPlugin"),
+        ("-DENABLE_BF16",),
+        std="c++20",
+        # fused MHA ships as precompiled cubins; mhaRunner only dispatches to them
+        exclude=("fused_multihead_attention", "mhaRunner"),
+        # the findings' controls: a plugin unit with one diagnosed defect fixed
+        local_units="external/ptx/TensorRT/units",
+    ),
 ]
 
 

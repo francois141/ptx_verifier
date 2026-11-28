@@ -1,0 +1,28 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// An atom.global.add on a path the launch does not take (param 2 is 0): atomics are not
+// modeled, but lowering accepts them and only executing one stops the run. out[0] = in[0].
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1,
+    .param .u32 k_param_2
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<4>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.param.u32 %r1, [k_param_2];
+    setp.eq.s32 %p1, %r1, 0;
+    @%p1 bra $L_skip;
+    atom.global.add.u32 %r2, [%rd2], 1;
+$L_skip:
+    ld.global.f32 %f1, [%rd1];
+    st.global.f32 [%rd2], %f1;
+    ret;
+}

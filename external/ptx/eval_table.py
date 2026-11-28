@@ -61,6 +61,13 @@ FINDINGS = {  # finding -> substrings of the kernels (registry unit:symbol, or s
                 ["gemm_mxfp8_blockscaled"],
                 "cp.async mainloop missing fence.proxy.async before tcgen05.mma, latent (CL-3)":
                 ["gemm_bf16_tn_cpasync"]},
+    # TensorRT/bugs.txt's numbering; each control (TensorRT/units/, or the corrected launch) verifies
+    "TensorRT": {"DeBERTa disentangled attention partial-tile overflow race (TRT-1)":
+                 ["plugin/disentangledAttentionPlugin/disentangledKernel.cu:"],
+                 "ScatterND transformed indices written past the workspace (TRT-2)":
+                 ["plugin/scatterPlugin/scatterLayer.cu:18transformIdxKernel"],
+                 "EfficientNMS blockState rewritten before every thread read it (TRT-3)":
+                 ["plugin/efficientNMSPlugin/efficientNMSInference.cu:"]},
     "TileLang": {"warp-specialize copy race (2)": ["matmul_warp_specialize_copy_gemm_0_1"],
                  "tcgen05 pipeliner stage-reuse race (2b)": ["gemm_sm100/matmul_kernel"]},
     # tritonbench/bugs.txt's numbering; each reproducing size has a control size that verifies
@@ -120,6 +127,7 @@ ROWS = [  # (table row, case registry, race sweep csv)
     ("FlashAttention", "flash-attention", None),
     ("FlashInfer", "flashinfer", None),
     ("FlashMLA", "FlashMLA", None),
+    ("TensorRT", "TensorRT", None),
     ("TensorRT-LLM", "TensorRT-LLM", None),
     ("ThunderKittens", None, "thunderkittens"),
     ("TileLang", None, "tilelang"),
@@ -149,7 +157,8 @@ def registry_verdicts(framework: str) -> dict[str, set[str]]:
     spec.loader.exec_module(module)
     kernels = defaultdict(set)
     for case in module.CASES:
-        if "patched/" in case.unit:  # a fixed copy of a kernel (a finding's control), not shipped
+        # a fixed copy of a kernel or a corrected launch (a finding's control), not shipped
+        if "patched/" in case.unit or getattr(case, "control", False):
             continue
         symbol = case.symbol if isinstance(case.symbol, str) else "+".join(case.symbol)
         kernels[f"{case.unit}:{symbol}"].add(case.check)

@@ -3,15 +3,15 @@
 //! share.
 
 use crate::frontend::ast::{
-    self, AbsInstr, AddInstr, BfeInstr, BfiInstr, BfindInstr, BrevInstr, CopysignInstr, CvtInstr,
-    CvtRounding, DivInstr, Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr,
-    MaxInstr, MinInstr, MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PopcInstr,
-    PrmtInstr, RcpInstr, RemInstr, RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr,
-    ShiftInstr, SqrtInstr, SubInstr, TanhInstr,
+    self, AbsInstr, AddInstr, BfeInstr, BfiInstr, BfindInstr, BmskInstr, BrevInstr, CopysignInstr,
+    CvtInstr, CvtRounding, DivInstr, Ex2Instr, FmaInstr, FpRound, IntRound, Lg2Instr, LogicInstr,
+    Lop3Instr, MadInstr, MaxInstr, MinInstr, MulInstr, MulMode, NegInstr, NotInstr,
+    Operand as AstOperand, PopcInstr, PrmtInstr, RcpInstr, RemInstr, RsqrtInstr, ScalarType,
+    SelpInstr, SetInstr, SetpInstr, ShfInstr, ShiftInstr, SqrtInstr, SubInstr, TanhInstr,
 };
 
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BinOp, Clamp, LoweredInstr, Operand, Predicate, UnaryOp};
+use crate::ir::{BinOp, Clamp, IntegerRounding, LoweredInstr, Operand, Predicate, UnaryOp};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::LowerResult;
@@ -1974,6 +1974,16 @@ pub(super) fn lower_cvt(
             dst,
             src,
         } => {
+            if let Some(CvtRounding::Integer(round)) = rnd {
+                return lower_cvt_round_int(
+                    ctx,
+                    *round,
+                    (*sat, *relu, *satfinite),
+                    (*dst_type, *src_type),
+                    (dst, src),
+                    predicate,
+                );
+            }
             // `.e4m3x2` source (PTX ISA 9.7.9.22, `cvt.rn.f16x2.e4m3x2`):
             // its result is a `Pair`, so it bypasses the scalar path below
             // (see `LoweredInstr::CvtE4m3x2ToF16x2`).
@@ -2068,12 +2078,7 @@ pub(super) fn lower_cvt(
                 // and float<->float conversion is the identity (the paper's
                 // documented abstraction).
                 None | Some(CvtRounding::Float(_)) => {}
-                Some(CvtRounding::Integer(_)) => {
-                    return Err(unsupported(
-                        "cvt",
-                        "integer-rounding modifier (floor/ceil/trunc/rint not modeled)",
-                    ));
-                }
+                Some(CvtRounding::Integer(_)) => unreachable!("lowered as CvtRoundInt above"),
                 Some(CvtRounding::Stochastic) => {
                     return Err(unsupported("cvt", ".rs stochastic-rounding modifier"));
                 }
@@ -2163,4 +2168,108 @@ pub(super) fn lower_cvt(
         }
     }
     Ok(())
+}
+
+/// `cvt.{rni,rzi,rmi,rpi}`: integer rounding is legal only from a float to an integer or
+/// to a float of the same size (PTX ISA 9.7.9.21, Integer Notes).
+fn lower_cvt_round_int(
+    ctx: &mut LoweringContext,
+    round: IntRound,
+    (sat, relu, satfinite): (bool, bool, bool),
+    (dst_type, src_type): (ScalarType, ScalarType),
+    (dst, src): (&AstOperand, &AstOperand),
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let same_size_float = dst_type.is_float() && dst_type.bits() == src_type.bits();
+    if !is_scalar_float(src_type) || !(dst_type.is_integer() || same_size_float) {
+        return Err(unsupported(
+            "cvt",
+            format!("integer rounding from .{src_type:?} to .{dst_type:?}"),
+        ));
+    }
+    // A float-to-integer result is clamped to the destination's range anyway.
+    if (sat && dst_type.is_float()) || relu || satfinite {
+        return Err(unsupported(
+            "cvt",
+            "integer rounding with a .sat, .relu or .satfinite float clamp",
+        ));
+    }
+    let rounding = match round {
+        IntRound::Rni => IntegerRounding::NearestEven,
+        IntRound::Rzi => IntegerRounding::TowardZero,
+        IntRound::Rmi => IntegerRounding::Down,
+        IntRound::Rpi => IntegerRounding::Up,
+    };
+    let dst = ctx.resolve_dst(dst)?;
+    let src = ctx.resolve_operand(src)?;
+    ctx.emit(
+        LoweredInstr::CvtRoundInt {
+            dst,
+            src,
+            dst_ty: dst_type,
+            src_ty: src_type,
+            rounding,
+        },
+        predicate,
+    )
+}
+
+pub(super) fn lower_bmsk(
+    ctx: &mut LoweringContext,
+    bmsk: &BmskInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst = ctx.resolve_dst_typed(&bmsk.dst)?;
+    ctx.check_dst_type(&dst, ScalarType::B32, "bmsk")?;
+    let start = ctx.resolve_operand(&bmsk.start)?;
+    let width = ctx.resolve_operand(&bmsk.len)?;
+    ctx.emit(
+        LoweredInstr::Bmsk {
+            dst: dst.reg,
+            start,
+            width,
+            mode: bmsk.mode,
+        },
+        predicate,
+    )
+}
+
+pub(super) fn lower_set(
+    ctx: &mut LoweringContext,
+    set: &SetInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let SetInstr::Simple {
+        cmp_op,
+        // ftz is ignorable: subnormal flushing doesn't apply over the reals.
+        ftz: _,
+        dst_type,
+        src_type,
+        dst,
+        src_a,
+        src_b,
+    } = set
+    else {
+        return Err(unsupported(
+            "set",
+            "boolean-combine modifier (.and/.or/.xor)",
+        ));
+    };
+    let dst = ctx.resolve_dst_typed(dst)?;
+    let src_a = ctx.resolve_operand_typed(src_a)?;
+    let src_b = ctx.resolve_operand_typed(src_b)?;
+    ctx.check_dst_type(&dst, *dst_type, "set")?;
+    ctx.check_operand_type(&src_a, *src_type, "set")?;
+    ctx.check_operand_type(&src_b, *src_type, "set")?;
+    ctx.emit(
+        LoweredInstr::Set {
+            cmp: ctx.convert_cmp_op(*cmp_op),
+            dst: dst.reg,
+            src_a: src_a.operand,
+            src_b: src_b.operand,
+            src_ty: *src_type,
+            dst_ty: *dst_type,
+        },
+        predicate,
+    )
 }

@@ -1,0 +1,131 @@
+TensorRT plugin issues found with Volta
+=======================================
+
+Sources: TensorRT OSS at 7fe18f08 (main, 2026-11-27; external/ptx/sources/frameworks.txt),
+fetched into target/ptx-sources/TensorRT by external/ptx/extraction/fetch_sources.py. The
+plugin units compile for sm_100a (nvcc 13.2, C++20) with external/ptx/extraction/survey.py;
+each case of external/ptx/TensorRT/cases.py launches one kernel as the plugin's host code does:
+
+    uv run external/ptx/extraction/survey.py TensorRT
+    python3 external/ptx/verify.py TensorRT
+
+Volta treats floats as exact reals, so nothing below is a rounding difference. Volta runs one
+CTA per case (its `cta`), so a race between two CTAs is out of its reach.
+
+
+1. Reported by Volta
+--------------------
+
+TRT-1  DisentangledAttention (DeBERTa): a partial 64 x 64 tile writes past its rows (race,
+       wrong output, out-of-bounds accesses)
+Where:    plugin/disentangledAttentionPlugin/disentangledKernel.cu:84,
+          GatherAddGatherTransposeAddMul_fused; launched by
+          DisentangledAttentionPlugin::enqueueType (disentangledAttentionPlugin.cpp:249) with
+          grid ((S - 1) / 64 + 1, (S - 1) / 64 + 1, BH) and block (64, 4).
+Volta:    disentangled_s40_partial_tile (BH = 2, S = 40, span 128): REJECTED, memory-conflict
+          freedom: WriteWrite on result[40] (and on the elements S apart after it) between
+          thread 40 (row j = 0, column k = 40) and thread 64 (row 1, column 0), both at
+          `st.global.b32` of the result write. With one head
+          (disentangled_s40_partial_tile_one_head) the run stops at an out-of-bounds read
+          of data2 (row 40 of 40). S = 64 is proved equal to its spec on all 4,096 outputs
+          (ACCEPT), and S = 128 verifies.
+What:     The grid rounds S up to whole 64 x 64 tiles, and the kernel has no bounds check:
+          every thread gathers data2 into the shared tile, reads data0 and data1 and writes
+          result at IND(i, j, k) = (i * S + j) * S + k, for j and k up to the tile's end.
+          When S is not a multiple of 64, a thread with k >= S writes the element (j + 1,
+          k - S) that another thread also writes, with a different value, and a thread with
+          j >= S writes into the next head's rows, or, for the last head, past the result.
+          Which write lands depends on scheduling, so the output changes from run to run.
+          The plugin accepts any S (supportsFormatCombination and configurePlugin check only
+          types, formats and ranks).
+Fix:      skip the out-of-range threads: guard the data2 gather and tile store by
+          `j + ty < S && k < S`, and the data0/data1 reads and the result write by the same
+          bound (external/ptx/TensorRT/units/disentangledKernel_fixed.cu).
+Status:   the fixed kernel is proved equal to the spec at S = 40 (ACCEPT, 1,600 outputs) and
+          race free at S = 40 with two heads and at S = 100 (block (1, 1, 1)). Upstream,
+          NVIDIA/TensorRT#4005 (open since 2024-07) reports DeBERTa outputs that change from
+          run to run with this plugin at a dynamic sequence length of 4059, not a multiple of
+          64, with no diagnosis; this is a likely cause. Reported as NVIDIA/TensorRT#4957 (2026-11-27).
+
+TRT-2  ScatterND: the transformed indices are written past the plugin's workspace for a data
+       tensor of rank 3 or more (out-of-bounds write)
+Where:    plugin/scatterPlugin/scatterLayer.cu:86, scatterNDInference:
+          `int* wo = (int*)(workspace); int* transformedIdx = wo + sizeof(int)*nOutputDims;`,
+          then transformIdxKernel<<<nRows, 1>>>(transformedIdx, ...) at :89. The workspace is
+          `outputs[0].dims.MAX_DIMS * sizeof(int32_t) + nSlices * sizeof(int32_t)` bytes
+          (scatterPlugin.cpp:101), and nOutputDims is the data tensor's rank
+          (scatterPlugin.cpp:210).
+Volta:    scatternd_rank4_indices_past_workspace (data rank 4, 3 slices of index rank 2, the
+          workspace at 0x40000, 44 bytes): ABORT, out-of-bounds Global store at 0x40040, the
+          first transformed index. Rank 2 (scatternd_rank2_indices) and the corrected offset
+          (scatternd_rank4_indices_fixed) verify.
+What:     `wo` is an int*, so `wo + sizeof(int) * nOutputDims` advances 4 x rank ints, 16 x
+          rank bytes, while the workspace reserves 8 ints (32 bytes) for the coefficients.
+          From rank 3 the nSlices indices start past those 32 bytes and their last 16 x rank -
+          32 bytes lie past the workspace's end, over whatever TensorRT placed after it.
+          Ranks 1 and 2 stay in bounds, leaving a gap.
+Fix:      `int* transformedIdx = wo + nvinfer1::Dims::MAX_DIMS;`, the layout the workspace size
+          assumes (or `wo + nOutputDims`).
+Status:   the corrected offset verifies. Reported as NVIDIA/TensorRT#4958 (2026-11-27); no
+          earlier report.
+
+
+TRT-3  EfficientNMS: an iteration's lead thread rewrites the shared `blockState` before the
+       other threads have read the previous iteration's (race, wrong suppression)
+Where:    plugin/efficientNMSPlugin/efficientNMSInference.cu:223-336, EfficientNMS<T, Tb>; launched
+          by EfficientNMSLauncher (:340) with one block of numSelectedBoxes / 5 threads (819 for
+          the default 4096; 256 or 512 for small values) per image.
+Volta:    efficient_nms_40_boxes (40 candidates, 20 coinciding pairs, defaults otherwise):
+          REJECTED, memory-conflict freedom: ReadWrite on `blockState` between thread 0's read in
+          iteration 0's IoU loop (`blockState == 1`, PTX line 1500) and thread 1's
+          `blockState = -1` as iteration 1's lead (line 1388), and WriteRead between that write
+          and threads 2 and 3's reads of iteration 0's value. Also with 24 candidates in one
+          warp (efficient_nms_24_boxes_one_warp): since Volta (sm_70) a warp's threads are not
+          implicitly synchronized either.
+What:     Each iteration i has one __syncthreads (:291): before it, iteration i's lead thread
+          writes blockState (-1 skip, -2 exit, 1 suppress); after it, every thread reads
+          blockState in its IoU test. Nothing orders those reads before iteration i + 1's lead
+          writes blockState again, before the next barrier. A thread still in iteration i that
+          reads the new value skips suppressing against box i (-1), returns early (-2), or
+          suppresses against a box that was dropped (1), so the detections depend on scheduling.
+          Reachable with the defaults whenever more than one thread is active, i.e. always.
+Fix:      a barrier at the start of each iteration, before the lead's write
+          (external/ptx/TensorRT/units/efficientNMSInference_fixed.cu).
+Status:   the fixed kernel verifies with 40 and with 24 candidates, and keeps the 20 even boxes
+          with their scores. Not reported upstream that we could find.
+
+2. Kernels Volta checked without findings
+-----------------------------------------
+
+Race free (graph checks) and, where named, proved equal to a spec on every output (ACCEPT):
+skipLayerNorm (skipLayerNormKernelSmall and skipLayerNormKernel, f32 and f16, ACCEPT; skipln_vec
+at 768, race free: its proof takes past the 10-minute timeout), embLayerNorm (fixed and
+variable sequence lengths, HFace and MTron; no spec, as a PTX spec cannot read the token ids'
+integers), the BERT mask kernels (maskIdxKernel{,Small}, fillSBSMaskKernel), the batched
+transpose (ACCEPT), groupNorm's scale-shift (ACCEPT), PointPillars' scatterBEV and ScatterND's
+index transform at rank 2. Volta checks one CTA per case, so each spec case launches a shape
+whose output one block writes.
+
+Leads from reading the code that Volta does not reproduce yet (they need atomic operations
+Volta does not model): voxelGenerator's generateFeatures_kernel stores center.z at
+`pillarOutSM[p][pt][warp_size + 5]` (voxelGeneratorKernels.cu:242) instead of index 10,
+overwriting feature 4 of point pt + 3 and leaving feature 10 unwritten; generateVoxels_kernel
+reads `points_size[B]` past the batch for the rounded-up grid's tail threads (:35-42).
+
+
+3. Volta changes these kernels needed
+-------------------------------------
+
+- `cvt` with integer rounding (`.rni`, `.rzi`, `.rmi`, `.rpi`; PTX ISA 9.7.9.21), float to
+  integer (clamped to the destination's range, so `.sat` is redundant) or to a float of the
+  same size: exact on a concrete value, and an integer converted to a float rounds to that
+  integer; any other symbolic value is unsupported (`LoweredInstr::CvtRoundInt`).
+- `bmsk.{clamp,wrap}.b32` (9.7.1.22) over concrete operands (`LoweredInstr::Bmsk`).
+- `set.CmpOp.dtype.stype` (9.7.6.1, 9.7.7.1): 1.0 or all ones where the comparison holds
+  (`LoweredInstr::Set`).
+- `atom` and `red` lower to `LoweredInstr::UnmodeledAtomic`: atomics are not modeled, so a
+  run that executes one stops as unsupported, and a kernel whose launch never reaches one
+  (EfficientNMS outside its ONNX-indices output) is analyzed in full.
+Together these lower 321 of the 400 plugin kernels (196 before). What still stops the others:
+`bar.red.{and,or}.pred` (56, `__syncthreads_and`/`_or` in the sorts and NMS), `cvt.pack.sat.s8`
+(16, int8 quantization), relaxed loads and stores (9) and NaN literals (6).

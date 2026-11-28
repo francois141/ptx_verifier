@@ -374,6 +374,8 @@ fn lower_parsed_instruction(
         ParsedInstruction::Shf(shf) => lower_shf(ctx, shf, predicate),
         ParsedInstruction::Bfi(bfi) => lower_bfi(ctx, bfi, predicate),
         ParsedInstruction::Bfe(bfe) => lower_bfe(ctx, bfe, predicate),
+        ParsedInstruction::Bmsk(bmsk) => arith::lower_bmsk(ctx, bmsk, predicate),
+        ParsedInstruction::Set(set) => arith::lower_set(ctx, set, predicate),
         ParsedInstruction::Setp(setp) => lower_setp(ctx, setp, predicate),
         ParsedInstruction::Selp(selp) => lower_selp(ctx, selp, predicate),
         ParsedInstruction::Mov(mov) => lower_mov(ctx, mov, predicate),
@@ -454,6 +456,12 @@ fn lower_parsed_instruction(
         }
         // Reaching a trap during evaluation is an analysis error
         ParsedInstruction::Trap => ctx.emit(LoweredInstr::Trap, predicate),
+        ParsedInstruction::Atom(_) | ParsedInstruction::Red(_) => ctx.emit(
+            LoweredInstr::UnmodeledAtomic {
+                instruction: format!("{instr:?}"),
+            },
+            predicate,
+        ),
         ParsedInstruction::Other {
             kind: InstrKind::LdGlobalNc,
             modifiers,

@@ -796,6 +796,37 @@ fn test_bf16_pair_widened_by_shift_and_mask() {
     analyze!("success/bf16_pair_widened_by_shift_and_mask", config);
 }
 
+/// `cvt.{rni,rzi,rmi,rpi}` round a concrete float exactly (a float-to-integer `.sat` clamps
+/// as the conversion already does), `bmsk` builds its clamped or wrapped mask, and `set`
+/// writes 1.0 or 0 by a symbolic comparison.
+#[test]
+fn test_cvt_integer_rounding_bmsk_and_set() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 2, ArrayKind::Input),
+        array("out", 0x20000, 4, 12, ArrayKind::Output),
+    ];
+    config.params = ["in", "out"].map(|name| ParamValue::ArrayPtr(name.to_string())).to_vec();
+    analyze!("success/cvt_integer_rounding_bmsk_and_set", config);
+}
+
+/// `atom` lowers though atomics are not modeled: only executing one stops the run, so a
+/// kernel whose launch skips it (EfficientNMS outside its ONNX output) is analyzed in full.
+#[test]
+fn test_unreached_atomic_lowers() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 1, ArrayKind::Input),
+        array("out", 0x20000, 4, 1, ArrayKind::Output),
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+        ParamValue::Int(0),
+    ];
+    analyze!("success/unreached_atomic_lowers", config);
+}
+
 /// `call vprintf` is lowered as a no-op returning 0: device printf's output is not modeled.
 #[test]
 fn test_vprintf_call_is_a_no_op() {
